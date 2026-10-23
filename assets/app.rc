@@ -1,0 +1,2 @@
+// Resource 1 is the icon GPUI uses for the window and taskbar; Explorer shows it for the exe.
+1 ICON "icon/app.ico"
