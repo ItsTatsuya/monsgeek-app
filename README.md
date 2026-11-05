@@ -3,8 +3,8 @@
 A native Windows configurator for MonsGeek / Akko Hall-effect keyboards (RY5088 platform:
 FUN60, FUN68, M1/M2/M3 V5 HE, …). Built with Rust, [GPUI Kit](https://crates.io/crates/gpui-kit) **0.9.0** (GPUI 0.3.11 and
 GPUI Component) and hidapi **2.6.7**, it
-talks to the keyboard directly over USB HID; no Electron runtime, browser, or vendor bridge
-(`iot_manager_rs.exe`) is needed. The bridge is still bundled, for the MonsGeek web driver
+talks to the keyboard directly over USB HID; no browser or vendor bridge (`iot_manager_rs.exe`)
+is needed. The bridge is still bundled, for the MonsGeek web driver
 (see [IOT bridge](#iot-bridge)).
 
 This is an unofficial, community-made tool and is not affiliated with MonsGeek or Akko.
@@ -56,24 +56,6 @@ release it or pause. Demo mode uses an in-memory keyboard and never opens a HID 
   read back from its notifications.
 
 Settings, rules and looks are saved to `%APPDATA%/Monsgeek App/config.json`.
-
-## Performance
-
-Measured on the same machine against the earlier Electron 33 version of this app (now
-removed), both in demo mode, window off-screen, release builds, averaged over two runs.
-Memory is summed over all of the app's processes.
-
-| | Native (this app) | Electron |
-|---|---|---|
-| Processes | 1 | 4 |
-| Working set, idle | ~70 MB | ~330 MB |
-| Private memory, idle | ~102 MB | ~274 MB |
-| Working set, animated lighting preview | ~72 MB | ~391 MB |
-| CPU, idle (one core) | ~2–4 % | ~0–0.5 % |
-| CPU, animated lighting preview (one core) | ~17 % | ~85 % |
-| Startup, warm (to window / UI ready) | ~0.5 s | ~0.6 s |
-| Startup, cold first launch | ~0.7 s | ~3.7 s |
-| Size on disk | 15 MB exe (now 40 MB: GPUI Kit components and the bundled IOT bridge) | 268 MB unpacked (78.5 MB installer) |
 
 ## Build
 
