@@ -1,7 +1,7 @@
 //! State and keyboard jobs for advanced keys, macros, per-key colours, calibration,
 //! backup/restore, polling rate and switch type.
 
-use super::{AppView, Page};
+use super::{AppView, Page, SliderDrag, SliderId};
 use crate::backup::{self, Backup};
 use crate::keycodes::char_to_hid;
 use crate::protocol::advanced::{DksConfig, ModTapConfig, MT_DEFAULT_TIME};
@@ -86,11 +86,17 @@ pub enum Field {
     Repeat,
     Delay(usize),
     RuleExe,
+    /// A slider's value box (actuation, RT, brightness, debounce…).
+    Slider(SliderId),
 }
 
 pub struct TextEdit {
     pub field: Field,
     pub text: String,
+    /// Slider fields: the range and step the typed value is clamped and rounded to.
+    pub range: Option<SliderDrag>,
+    /// Nothing typed yet, so the first key replaces the shown value (like select-all).
+    pub fresh: bool,
 }
 
 pub struct PerKey {
@@ -771,8 +777,21 @@ impl AppView {
                 .as_ref()
                 .and_then(|m| m.draft.steps.get(i))
                 .map_or(String::new(), |s| s.delay.to_string()),
+            Field::Slider(_) => String::new(),
         };
-        self.features.edit = Some(TextEdit { field, text });
+        self.features.edit = Some(TextEdit { field, text, range: None, fresh: false });
+        cx.notify();
+    }
+
+    /// Starts typing into a slider's value box, showing its current value.
+    pub fn begin_slider_edit(&mut self, d: SliderDrag, text: String, cx: &mut Context<Self>) {
+        self.features.field_clicked = true;
+        let field = Field::Slider(d.id);
+        if self.features.edit.as_ref().is_some_and(|e| e.field == field) {
+            return;
+        }
+        self.commit_edit(cx);
+        self.features.edit = Some(TextEdit { field, text, range: Some(d), fresh: true });
         cx.notify();
     }
 
@@ -782,6 +801,14 @@ impl AppView {
         };
         match e.field {
             Field::Search | Field::MacroText | Field::RuleExe => {}
+            Field::Slider(id) => {
+                let typed = e.text.trim().replace(',', ".").parse::<f32>();
+                if let (Some(d), Ok(v)) = (e.range, typed) {
+                    if v.is_finite() {
+                        self.nudge(id, snap(v, d), cx);
+                    }
+                }
+            }
             Field::Repeat => {
                 let v = e.text.trim().parse::<u16>().unwrap_or(1).clamp(1, 999);
                 self.edit_macro(|m| m.draft.repeat = v, cx);
@@ -807,6 +834,7 @@ impl AppView {
             return false;
         };
         let numeric = matches!(e.field, Field::Repeat | Field::Delay(_));
+        let decimal = matches!(e.field, Field::Slider(_));
         match k.key.as_str() {
             "enter" => {
                 let field = e.field;
@@ -821,6 +849,9 @@ impl AppView {
             }
             "escape" => self.features.edit = None,
             "backspace" => {
+                if std::mem::take(&mut e.fresh) {
+                    e.text.clear();
+                }
                 e.text.pop();
             }
             _ => {
@@ -833,6 +864,12 @@ impl AppView {
                 };
                 if numeric && !ch.chars().all(|c| c.is_ascii_digit()) {
                     return true;
+                }
+                if decimal && !ch.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',') {
+                    return true;
+                }
+                if std::mem::take(&mut e.fresh) {
+                    e.text.clear();
                 }
                 e.text.push_str(ch);
             }
@@ -1412,6 +1449,12 @@ pub fn common_switch(keys: &[KeyHe], indices: &[usize]) -> Option<u8> {
     indices.iter().all(|&i| keys[i].switch_type == first).then_some(first)
 }
 
+/// A typed slider value, clamped to the slider's range and rounded to its step.
+pub fn snap(v: f32, d: SliderDrag) -> f32 {
+    let v = v.clamp(d.min, d.max);
+    (((v - d.min) / d.step).round() * d.step + d.min).clamp(d.min, d.max)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1425,5 +1468,15 @@ mod tests {
         assert_eq!(key_to_hid(";"), Some(0x33));
         assert_eq!(key_to_hid("nope"), None);
         assert_eq!(tap(4, 20, &[0xe0]).len(), 4);
+    }
+
+    #[test]
+    fn typed_slider_values_snap_to_range_and_step() {
+        let d = SliderDrag { id: SliderId::Actuation, min: 0.1, max: 3.4, step: 0.01 };
+        assert!((snap(1.234, d) - 1.23).abs() < 1e-4);
+        assert!((snap(9.0, d) - 3.4).abs() < 1e-4);
+        assert!((snap(0.0, d) - 0.1).abs() < 1e-4);
+        let d = SliderDrag { id: SliderId::Stability, min: 0.0, max: 125.0, step: 25.0 };
+        assert_eq!(snap(60.0, d), 50.0);
     }
 }

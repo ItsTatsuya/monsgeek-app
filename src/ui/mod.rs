@@ -7,6 +7,7 @@ mod calibration;
 mod layer_card;
 mod macro_editor;
 mod perkey;
+pub mod smooth_scroll;
 mod tester;
 
 use crate::app::{
@@ -226,8 +227,9 @@ impl Render for AppView {
         } else {
             self.connect_screen(cx).into_any_element()
         };
-        if !self.focus.is_focused(window) {
-            self.focus.focus(window);
+        // Keys go to the app unless a kit input (the colour picker's hex field) has focus.
+        if window.focused(cx).is_none() {
+            self.focus.focus(window, cx);
         }
         div()
             .relative()
@@ -416,7 +418,7 @@ impl AppView {
                 let active = value == Some(v);
                 let on = on.clone();
                 div()
-                    .id(ElementId::NamedChild(Box::new(id.clone()), i.to_string().into()))
+                    .id(ElementId::NamedChild(std::sync::Arc::new(id.clone()), i.to_string().into()))
                     .px(px(12.))
                     .h(px(30.))
                     .flex()
@@ -499,6 +501,12 @@ impl AppView {
         } else {
             t.accent
         };
+        let editing = self
+            .features
+            .edit
+            .as_ref()
+            .filter(|e| e.field == Field::Slider(id))
+            .map(|e| (e.text.clone(), e.fresh));
         let text = value.map(|v| format!("{v:.decimals$}")).unwrap_or_else(|| {
             if disabled {
                 "—".into()
@@ -540,7 +548,9 @@ impl AppView {
                     .child(div().flex_1().font_weight(FontWeight(550.)).child(label))
                     .child(step_btn(-1.0, "−"))
                     .child(
+                        // Click to type a value; Enter or clicking elsewhere applies it, Esc cancels.
                         div()
+                            .id(("value", id as usize))
                             .w(px(96.))
                             .h(px(28.))
                             .flex()
@@ -550,11 +560,32 @@ impl AppView {
                             .rounded(px(7.))
                             .bg(t.surface_2)
                             .border_1()
-                            .border_color(t.border)
+                            .border_color(if editing.is_some() { t.accent } else { t.border })
                             .font_family(NUM_FONT)
                             .font_weight(FontWeight::MEDIUM)
                             .text_size(px(13.))
-                            .child(format!("{text} {unit}")),
+                            .when(!disabled, |el| {
+                                let start = value.map(|v| format!("{v:.decimals$}")).unwrap_or_default();
+                                el.cursor_text().on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.begin_slider_edit(d, start.clone(), cx)
+                                    }),
+                                )
+                            })
+                            .map(|el| match &editing {
+                                Some((typed, fresh)) => el
+                                    .child(
+                                        div()
+                                            .when(*fresh, |s| s.bg(t.accent_soft).rounded(px(3.)))
+                                            .child(typed.clone()),
+                                    )
+                                    .child(div().ml(px(1.)).w(px(1.5)).h(px(15.)).bg(t.accent))
+                                    .when(!unit.is_empty(), |el| {
+                                        el.child(div().ml(px(4.)).text_color(t.muted).child(unit))
+                                    }),
+                                None => el.child(format!("{text} {unit}")),
+                            }),
                     )
                     .child(step_btn(1.0, "+")),
             )
@@ -624,6 +655,7 @@ impl AppView {
             Field::Repeat => 2,
             Field::RuleExe => 3,
             Field::Delay(i) => 100 + i,
+            Field::Slider(s) => 200 + s as usize,
         };
         div()
             .id(("field", id))
@@ -1054,6 +1086,7 @@ impl AppView {
     }
 
     fn shell(&mut self, window: &mut Window, cx: &mut Cx) -> Div {
+        self.sync_pickers(window, cx);
         let t = self.theme;
         let d = self.device.as_ref().unwrap();
         let (title, sub) = self.page.title();
@@ -1263,11 +1296,14 @@ impl AppView {
                 .child(
                     div()
                         .id(("content", self.page as usize))
+                        .relative()
                         .flex_1()
                         .overflow_y_scroll()
+                        .track_scroll(&self.content_scroll.handle)
                         .px(px(28.))
                         .pt(px(16.))
                         .pb(px(28.))
+                        .child(smooth_scroll::layer(&self.content_scroll))
                         .child(page.w_full()),
                 ),
         )
@@ -2002,7 +2038,7 @@ impl AppView {
                             .flex_col()
                             .gap(px(8.))
                             .child(div().font_weight(FontWeight::MEDIUM).child("Colour"))
-                            .child(div().flex().gap(px(8.)).children(SWATCHES.iter().map(
+                            .child(div().flex().flex_wrap().items_center().gap(px(8.)).children(SWATCHES.iter().map(
                                 |&hex| {
                                     let rgb3 = [(hex >> 16) as u8, (hex >> 8) as u8, hex as u8];
                                     let active = l.color == rgb3;
@@ -2021,8 +2057,12 @@ impl AppView {
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.edit_lighting(|l| l.color = rgb3, cx)
                                         }))
+                                        .into_any_element()
                                 },
-                            ))),
+                            ))
+                            .children(self.pickers.as_ref().map(|p| {
+                                self.color_picker(&p.effect, "Custom colour", l.color)
+                            }))),
                     )
                 })
             });
@@ -2078,6 +2118,9 @@ impl AppView {
 
     fn settings(&mut self, window: &mut Window, cx: &mut Cx) -> Div {
         let _ = window;
+        if self.iot.running.is_none() {
+            self.iot(crate::app::IotAction::Check, cx);
+        }
         let t = self.theme;
         let d = self.device.as_ref().unwrap();
         let fw = d.info.firmware;
@@ -2237,6 +2280,7 @@ impl AppView {
                 })))
             },
         );
+        let iot = self.iot_card(cx);
         div()
             .flex()
             .gap(px(16.))
@@ -2250,7 +2294,8 @@ impl AppView {
                     .flex()
                     .flex_col()
                     .gap(px(16.))
-                    .child(keyboard),
+                    .child(keyboard)
+                    .child(iot),
             )
             .child(
                 div()
@@ -2277,4 +2322,42 @@ fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
         a: a.a + (b.a - a.a) * t,
     }
     .into()
+}
+
+impl AppView {
+    /// A colour swatch with its hex code that opens GPUI Kit's picker: palette, HSLA sliders
+    /// and a hex box you can type into. The app's swatches come first in its palette.
+    fn color_picker(
+        &self,
+        state: &Entity<gpui::component::color_picker::ColorPickerState>,
+        label: &'static str,
+        current: [u8; 3],
+    ) -> AnyElement {
+        use gpui::component::color_picker::ColorPicker;
+        let t = self.theme;
+        let featured = SWATCHES
+            .iter()
+            .map(|&h| crate::app::pickers_to_hsla([(h >> 16) as u8, (h >> 8) as u8, h as u8]))
+            .collect();
+        // Our own hex label: the kit's field truncates channels (#3B9BFF would read #3A9BFF).
+        let hex = format!("#{:02X}{:02X}{:02X}  ▾", current[0], current[1], current[2]);
+        div()
+            .flex()
+            .items_center()
+            .h(px(32.))
+            .pl(px(4.))
+            .pr(px(10.))
+            .rounded(px(8.))
+            .bg(t.surface_2)
+            .border_1()
+            .border_color(t.border_strong)
+            .text_size(px(12.5))
+            .child(
+                ColorPicker::new(state)
+                    .featured_colors(featured)
+                    .accessibility_label(label)
+                    .label(hex),
+            )
+            .into_any_element()
+    }
 }

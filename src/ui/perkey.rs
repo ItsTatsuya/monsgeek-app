@@ -99,35 +99,6 @@ impl AppView {
             .gap(px(8.))
             .child(div().flex().gap(px(8.)).children(STARTER[..5].iter().map(|&h| swatch(h))))
             .child(div().flex().gap(px(8.)).children(STARTER[5..].iter().map(|&h| swatch(h))));
-        // Fine control: step each channel.
-        let channel = |i: usize, name: &'static str| {
-            let v = color[i];
-            let step = move |delta: i16| {
-                move |this: &mut AppView, _: &ClickEvent, _: &mut Window, cx: &mut Cx| {
-                    if let Some(p) = this.features.perkey.as_mut() {
-                        p.color[i] = (p.color[i] as i16 + delta).clamp(0, 255) as u8;
-                    }
-                    cx.notify();
-                }
-            };
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(div().w(px(14.)).text_color(t.muted).child(name))
-                .child(self.small_button(("pk-m16", i), "−16", Btn::Ghost, true).on_click(cx.listener(step(-16))))
-                .child(self.small_button(("pk-m1", i), "−", Btn::Ghost, true).on_click(cx.listener(step(-1))))
-                .child(
-                    div()
-                        .w(px(40.))
-                        .text_center()
-                        .font_family(NUM_FONT)
-                        .text_size(px(12.5))
-                        .child(v.to_string()),
-                )
-                .child(self.small_button(("pk-p1", i), "+", Btn::Ghost, true).on_click(cx.listener(step(1))))
-                .child(self.small_button(("pk-p16", i), "+16", Btn::Ghost, true).on_click(cx.listener(step(16))))
-        };
         let brush = div()
             .flex()
             .flex_col()
@@ -138,17 +109,10 @@ impl AppView {
                     .items_center()
                     .gap(px(12.))
                     .child(div().size(px(44.)).rounded(px(10.)).bg(rgb(hex(color))).border_1().border_color(t.border_strong))
-                    .child(
-                        div()
-                            .font_family(NUM_FONT)
-                            .text_size(px(13.))
-                            .child(format!("#{:06X}", hex(color))),
-                    ),
+                    // Opens the full picker: palette, HSLA sliders and a hex box to type into.
+                    .children(self.pickers.as_ref().map(|p| self.color_picker(&p.brush, "Brush colour", color))),
             )
-            .child(swatches)
-            .child(channel(0, "R"))
-            .child(channel(1, "G"))
-            .child(channel(2, "B"));
+            .child(swatches);
 
         let pictures = (count > 1).then(|| {
             self.segmented(

@@ -88,3 +88,36 @@ impl Theme {
 pub const UI_FONT: &str = "Inter";
 /// Fixed-width digits for live values, so they don't shift as they change.
 pub const NUM_FONT: &str = "JetBrains Mono";
+
+/// Gives GPUI Kit components (the colour picker and its popover, inputs, tabs, sliders) the
+/// app's colours and font. Call once after `gpui::init`.
+pub fn apply_to_kit(cx: &mut gpui::App) {
+    use gpui::component::{Theme as Kit, ThemeMode};
+    let t = Theme::new();
+    Kit::change(ThemeMode::Dark, None, cx);
+    Kit::update(cx, |k| {
+        k.font_family = UI_FONT.into();
+        k.font_size = gpui::px(14.);
+        k.radius = gpui::px(8.);
+        k.shadow = true;
+        k.background = t.bg;
+        k.foreground = t.text;
+        k.popover = t.surface;
+        k.popover_foreground = t.text;
+        k.border = t.border_strong;
+        k.input = t.border_strong;
+        k.ring = t.text_2;
+        k.caret = t.text;
+        k.selection = t.accent_soft;
+        k.primary = t.accent;
+        k.primary_foreground = t.on_accent;
+        k.secondary = t.surface_2;
+        k.accent = t.hover;
+        k.muted = t.surface_2;
+        k.muted_foreground = t.muted;
+        k.tab_bar = t.surface_2;
+        k.tab_active = t.surface_3;
+        k.slider_bar = t.track;
+        k.slider_thumb = gpui::white();
+    });
+}

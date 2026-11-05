@@ -5,6 +5,7 @@ mod assets;
 mod backup;
 mod config;
 mod devices;
+mod iot;
 mod keycodes;
 mod layer_lighting;
 mod light_preview;
@@ -20,7 +21,7 @@ mod win;
 pub const APP_NAME: &str = "Monsgeek App";
 
 use gpui::{
-    point, px, size, App, AppContext, Application, Bounds, TitlebarOptions, WindowBackgroundAppearance,
+    point, px, size, App, AppContext, Bounds, Pixels, TitlebarOptions, WindowBackgroundAppearance,
     WindowBounds, WindowOptions,
 };
 
@@ -50,21 +51,40 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| app::Page::parse(s));
 
-    Application::new()
+    gpui::platform::application()
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
+            gpui::init(cx);
+            theme::apply_to_kit(cx);
             assets::load_fonts(cx);
-            cx.on_window_closed(|cx| {
+            cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
                 }
             })
             .detach();
             let config = config::Config::load();
-            let mut bounds = Bounds::centered(None, size(px(1240.), px(820.)), cx);
-            if shot {
-                bounds.origin = point(px(-4000.), px(0.));
-            }
+            // 1240 × 820 content, shrunk to fit the screen's work area (minus the taskbar) so the
+            // whole window, title bar included, opens on screen at any size or DPI scale. The
+            // bounds are the content area; the title bar and frame need about 80 px more.
+            let area = cx.primary_display().map(|d| d.visible_bounds());
+            let fit = |want: f32, avail: Option<Pixels>, frame: f32| match avail {
+                Some(a) => want.min((f32::from(a) - frame).max(480.)),
+                None => want,
+            };
+            let width = fit(1240., area.map(|a| a.size.width), 32.);
+            let height = fit(820., area.map(|a| a.size.height), 96.);
+            let bounds = match area {
+                Some(a) => Bounds::new(
+                    point(
+                        a.origin.x + (a.size.width - px(width)) / 2.,
+                        // Centred, counting the title bar above the content.
+                        a.origin.y + ((a.size.height - px(height + 40.)) / 2.).max(px(0.)) + px(40.),
+                    ),
+                    size(px(width), px(height)),
+                ),
+                None => Bounds::centered(None, size(px(width), px(height)), cx),
+            };
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
@@ -72,7 +92,7 @@ fn main() {
                     ..Default::default()
                 }),
                 window_background: WindowBackgroundAppearance::Opaque,
-                window_min_size: Some(size(px(900.), px(600.))),
+                window_min_size: Some(size(px(width.min(900.)), px(height.min(600.)))),
                 focus: !shot,
                 ..Default::default()
             };
@@ -82,6 +102,12 @@ fn main() {
                         .detach();
                     let mut view = app::AppView::new(config, cx);
                     view.tools.hwnd = win::hwnd_of(window);
+                    if shot {
+                        // GPUI swaps off-screen bounds for its default size, so open normally
+                        // and move the window off-screen straight away.
+                        win::move_offscreen(view.tools.hwnd);
+                    }
+                    view.init_pickers(window, cx);
                     view.sync_auto(cx);
                     view.start_page = start_page;
                     if demo {
@@ -120,7 +146,8 @@ fn main() {
                         Err(_) => true,
                     }
                 });
-                view
+                // GPUI Kit components (colour picker, inputs) draw their popovers in Root.
+                cx.new(|cx| gpui::base::Root::new(view, window, cx))
             })
             .expect("open window");
             if !shot {

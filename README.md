@@ -1,16 +1,19 @@
 # Monsgeek App
 
 A native Windows configurator for MonsGeek / Akko Hall-effect keyboards (RY5088 platform:
-FUN60, FUN68, M1/M2/M3 V5 HE, …). Built with Rust, GPUI **0.2.2** and hidapi **2.6.7**, it
+FUN60, FUN68, M1/M2/M3 V5 HE, …). Built with Rust, [GPUI Kit](https://crates.io/crates/gpui-kit) **0.9.0** (GPUI 0.3.11 and
+GPUI Component) and hidapi **2.6.7**, it
 talks to the keyboard directly over USB HID; no Electron runtime, browser, or vendor bridge
-(`iot_manager_rs.exe`) is needed.
+(`iot_manager_rs.exe`) is needed. The bridge is still bundled, for the MonsGeek web driver
+(see [IOT bridge](#iot-bridge)).
 
 This is an unofficial, community-made tool and is not affiliated with MonsGeek or Akko.
 
 ## Download
 
 Grab `monsgeek-app.exe` from the [latest release](https://github.com/ItsTatsuya/monsgeek-app/releases/latest).
-It is a single portable executable: model definitions, fonts and icons are embedded. Close the
+It is a single portable executable: model definitions, fonts, icons and the
+official IOT bridge are embedded. Close the
 official driver before connecting, so the two apps don't send commands at the same time.
 
 ```powershell
@@ -25,7 +28,8 @@ release it or pause. Demo mode uses an in-memory keyboard and never opens a HID 
 
 - **Performance:** click/drag multi-selection, WASD/letters/all groups, actuation and
   release points, Rapid Trigger with linked or separate press/release values, bottom dead
-  zone, and presets.
+  zone, and presets. Click any value box to type an exact number (Enter or click away applies
+  it, Esc cancels); it's clamped to the range and rounded to the slider's step.
 - **Remap:** base layer, numbered Fn layers, factory reset per key, keyboard/media/firmware
   function palette with search, and a readable list of Fn shortcuts.
 - **Macros:** record from the keyboard with or without real timing, type text as keystrokes,
@@ -34,7 +38,9 @@ release it or pause. Demo mode uses an in-memory keyboard and never opens a HID 
   four phases, trigger point) and mod-tap (tap/hold actions, hold time).
 - **Lighting:** 20 effects with brightness, speed, direction, rainbow or single colour, and
   an animated preview that lights whole keys the way the keyboard does (reactive effects
-  respond to your typing). Per-key colours paint the model's user pictures.
+  respond to your typing). Pick any colour: presets, or a colour picker with a palette,
+  HSLA sliders and a hex box. Per-key colours paint the model's user pictures with the same
+  picker as the brush.
 - **Lighting per profile and Fn layer:** when the keyboard switches profile or layer, the app
   writes the matching look (while the app runs).
 - **Tester:** live analog travel at 60 fps with per-key peaks, a Rapid Trigger prediction and
@@ -45,6 +51,7 @@ release it or pause. Demo mode uses an in-memory keyboard and never opens a HID 
 - **Settings:** polling rate (firmware 4.00+), switch type, debounce, RT stability, WASD/arrow
   swap, accidental-press guard, device info, factory reset, optional background blur, and
   whole-keyboard backup & restore to JSON.
+- **IOT bridge:** start or stop the bundled official `iot_manager` from Settings.
 - **4 onboard profiles**, switched from the header; changes made on the keyboard itself are
   read back from its notifications.
 
@@ -66,7 +73,7 @@ Memory is summed over all of the app's processes.
 | CPU, animated lighting preview (one core) | ~17 % | ~85 % |
 | Startup, warm (to window / UI ready) | ~0.5 s | ~0.6 s |
 | Startup, cold first launch | ~0.7 s | ~3.7 s |
-| Size on disk | 15 MB exe | 268 MB unpacked (78.5 MB installer) |
+| Size on disk | 15 MB exe (now 40 MB: GPUI Kit components and the bundled IOT bridge) | 268 MB unpacked (78.5 MB installer) |
 
 ## Build
 
@@ -91,6 +98,16 @@ cargo run -- --probe-stream 20    # enable travel reporting for 20 s, then disab
 ```
 
 Screenshots from demo checks are in `shots/`.
+
+## IOT bridge
+
+The exe embeds the official driver's `iot_manager` 0.1.8 (`iot_manager_rs.exe` and its helper
+services, from `MonsGeek_V4_Driver_500.3.4`; see [vendor/iot_manager](vendor/iot_manager/README.md)).
+This app doesn't use it. It's there for the MonsGeek web driver, which needs it running locally.
+Settings › IOT bridge › **Start** unpacks it to `%APPDATA%/Monsgeek App/iot_manager` and starts
+it hidden. It listens on 127.0.0.1:6015 and starts `common_hid_rs.exe` on 127.0.0.1:3838.
+**Stop** ends both, including a copy that the official driver started. The bridge keeps running
+after the app closes. Don't change settings from the web driver and this app at the same time.
 
 ## Known limits
 

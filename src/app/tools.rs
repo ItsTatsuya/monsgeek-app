@@ -354,7 +354,7 @@ impl AppView {
         self.transitioning = true;
         cx.spawn(async move |_, cx| {
             done.await;
-            cx.update(|cx| cx.quit()).ok();
+            cx.update(|cx| cx.quit());
         })
         .detach();
         cx.notify();
@@ -562,6 +562,65 @@ impl AppView {
                 physical.filter(|&i| same_settings(&d.keys[i], &k)).collect()
             }
         }
+    }
+}
+
+/// Settings › IOT bridge: whether it runs, and the start/stop in progress.
+#[derive(Default)]
+pub struct IotUi {
+    /// None until the first check finishes.
+    pub running: Option<bool>,
+    pub checking: bool,
+    pub busy: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+pub enum IotAction {
+    Check,
+    Start,
+    Stop,
+}
+
+impl AppView {
+    /// Checks, starts or stops the bundled IOT bridge off the UI thread.
+    pub fn iot(&mut self, action: IotAction, cx: &mut Context<Self>) {
+        if self.iot.busy || (self.iot.checking && matches!(action, IotAction::Check)) {
+            return;
+        }
+        match action {
+            IotAction::Check => self.iot.checking = true,
+            _ => {
+                self.iot.busy = true;
+                self.iot.error = None;
+            }
+        }
+        let task = cx.background_executor().spawn(async move {
+            let r = match action {
+                IotAction::Check => Ok(()),
+                IotAction::Start => crate::iot::start(),
+                IotAction::Stop => crate::iot::stop(),
+            };
+            (r, crate::iot::running())
+        });
+        cx.spawn(async move |this, cx| {
+            let (r, running) = task.await;
+            this.update(cx, |s, cx| {
+                s.iot.checking = false;
+                s.iot.busy = false;
+                s.iot.running = Some(running);
+                match (action, r) {
+                    (_, Err(e)) => s.iot.error = Some(format!("{e:#}")),
+                    (IotAction::Start, Ok(())) => s.toast("IOT bridge started", false, cx),
+                    (IotAction::Stop, Ok(())) => s.toast("IOT bridge stopped", false, cx),
+                    _ => {}
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 }
 

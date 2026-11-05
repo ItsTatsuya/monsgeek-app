@@ -1,4 +1,4 @@
-//! Sidebar icons and bundled typography, available offline.
+//! Sidebar icons, GPUI Kit component icons and bundled typography, available offline.
 
 use gpui::{App, AssetSource, SharedString};
 use std::borrow::Cow;
@@ -34,18 +34,23 @@ const ICONS: &[(&str, &[u8])] = &[
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
-        Ok(ICONS
-            .iter()
-            .find(|(name, _)| *name == path)
-            .map(|(_, bytes)| Cow::Borrowed(*bytes)))
+        match ICONS.iter().find(|(name, _)| *name == path) {
+            Some((_, bytes)) => Ok(Some(Cow::Borrowed(*bytes))),
+            // Component icons (colour picker, inputs) come from GPUI Kit.
+            None => gpui::assets::Assets.load(path),
+        }
     }
 
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
-        Ok(ICONS
+        let mut names: Vec<SharedString> = ICONS
             .iter()
             .filter(|(name, _)| name.starts_with(path))
             .map(|(name, _)| (*name).into())
-            .collect())
+            .collect();
+        names.extend(gpui::assets::Assets.list(path)?);
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 }
 

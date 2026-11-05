@@ -420,6 +420,18 @@ pub fn show_window(hwnd: isize, show: bool) {
 }
 
 /// The Win32 handle behind a GPUI window.
+/// Moves a window far off-screen without resizing, activating or raising it (--shot).
+pub fn move_offscreen(hwnd: isize) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    if hwnd != 0 {
+        unsafe {
+            SetWindowPos(hwnd as HWND, std::ptr::null_mut(), -4000, 0, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+}
+
 pub fn hwnd_of(window: &impl raw_window_handle::HasWindowHandle) -> isize {
     match window.window_handle().map(|h| h.as_raw()) {
         Ok(raw_window_handle::RawWindowHandle::Win32(h)) => h.hwnd.get(),

@@ -1,6 +1,8 @@
 //! App state and everything that talks to the keyboard. Rendering lives in ui/.
 
 mod features;
+mod pickers;
+pub use pickers::{to_hsla as pickers_to_hsla, Pickers};
 mod tools;
 pub use features::*;
 pub use tools::*;
@@ -187,6 +189,11 @@ pub struct AppView {
     pub toasts: Vec<Toast>,
     pub busy: usize,
     pub confirm_reset: bool,
+    pub iot: IotUi,
+    /// Created with the window (see `init_pickers`).
+    pub pickers: Option<Pickers>,
+    /// The page area's scroll position, eased on mouse-wheel input.
+    pub content_scroll: crate::ui::smooth_scroll::SmoothScroll,
     pub travel: Vec<f32>,
     pub peaks: Vec<f32>,
     /// Page to open once the keyboard is loaded (the --page option).
@@ -232,6 +239,9 @@ impl AppView {
             toasts: Vec::new(),
             busy: 0,
             confirm_reset: false,
+            iot: IotUi::default(),
+            pickers: None,
+            content_scroll: Default::default(),
             travel: vec![0.0; crate::protocol::MATRIX_KEYS],
             peaks: vec![0.0; crate::protocol::MATRIX_KEYS],
             start_page: None,
@@ -489,10 +499,14 @@ impl AppView {
         }
         self.commit_edit(cx);
         self.page = page;
+        self.content_scroll.reset();
         self.selection.clear();
         self.confirm_reset = false;
         self.features.adv = None;
         self.features.switch_menu = false;
+        if page == Page::Settings {
+            self.iot.running = None;
+        }
         if page == Page::Tester && self.features.tester_tab == TesterTab::Switch {
             self.start_stream(cx);
         }
