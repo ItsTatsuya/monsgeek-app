@@ -189,7 +189,6 @@ pub struct AppView {
     pub toasts: Vec<Toast>,
     pub busy: usize,
     pub confirm_reset: bool,
-    pub iot: IotUi,
     /// Created with the window (see `init_pickers`).
     pub pickers: Option<Pickers>,
     /// The page area's scroll position, eased on mouse-wheel input.
@@ -239,7 +238,6 @@ impl AppView {
             toasts: Vec::new(),
             busy: 0,
             confirm_reset: false,
-            iot: IotUi::default(),
             pickers: None,
             content_scroll: Default::default(),
             travel: vec![0.0; crate::protocol::MATRIX_KEYS],
@@ -504,9 +502,6 @@ impl AppView {
         self.confirm_reset = false;
         self.features.adv = None;
         self.features.switch_menu = false;
-        if page == Page::Settings {
-            self.iot.running = None;
-        }
         if page == Page::Tester && self.features.tester_tab == TesterTab::Switch {
             self.start_stream(cx);
         }

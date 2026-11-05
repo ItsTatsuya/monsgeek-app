@@ -2118,9 +2118,6 @@ impl AppView {
 
     fn settings(&mut self, window: &mut Window, cx: &mut Cx) -> Div {
         let _ = window;
-        if self.iot.running.is_none() {
-            self.iot(crate::app::IotAction::Check, cx);
-        }
         let t = self.theme;
         let d = self.device.as_ref().unwrap();
         let fw = d.info.firmware;
@@ -2280,7 +2277,6 @@ impl AppView {
                 })))
             },
         );
-        let iot = self.iot_card(cx);
         div()
             .flex()
             .gap(px(16.))
@@ -2294,8 +2290,7 @@ impl AppView {
                     .flex()
                     .flex_col()
                     .gap(px(16.))
-                    .child(keyboard)
-                    .child(iot),
+                    .child(keyboard),
             )
             .child(
                 div()

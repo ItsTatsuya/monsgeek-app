@@ -5,7 +5,6 @@ mod assets;
 mod backup;
 mod config;
 mod devices;
-mod iot;
 mod keycodes;
 mod layer_lighting;
 mod light_preview;

@@ -4,16 +4,15 @@ A native Windows configurator for MonsGeek / Akko Hall-effect keyboards (RY5088 
 FUN60, FUN68, M1/M2/M3 V5 HE, …). Built with Rust, [GPUI Kit](https://crates.io/crates/gpui-kit) **0.9.0** (GPUI 0.3.11 and
 GPUI Component) and hidapi **2.6.7**, it
 talks to the keyboard directly over USB HID; no browser or vendor bridge (`iot_manager_rs.exe`)
-is needed. The bridge is still bundled, for the MonsGeek web driver
-(see [IOT bridge](#iot-bridge)).
+is needed.
 
 This is an unofficial, community-made tool and is not affiliated with MonsGeek or Akko.
 
 ## Download
 
 Grab `monsgeek-app.exe` from the [latest release](https://github.com/ItsTatsuya/monsgeek-app/releases/latest).
-It is a single portable executable: model definitions, fonts, icons and the
-official IOT bridge are embedded. Close the
+It is a single portable executable: model definitions, fonts and icons
+are embedded. Close the
 official driver before connecting, so the two apps don't send commands at the same time.
 
 ```powershell
@@ -51,7 +50,6 @@ release it or pause. Demo mode uses an in-memory keyboard and never opens a HID 
 - **Settings:** polling rate (firmware 4.00+), switch type, debounce, RT stability, WASD/arrow
   swap, accidental-press guard, device info, factory reset, optional background blur, and
   whole-keyboard backup & restore to JSON.
-- **IOT bridge:** start or stop the bundled official `iot_manager` from Settings.
 - **4 onboard profiles**, switched from the header; changes made on the keyboard itself are
   read back from its notifications.
 
@@ -80,16 +78,6 @@ cargo run -- --probe-stream 20    # enable travel reporting for 20 s, then disab
 ```
 
 Screenshots from demo checks are in `shots/`.
-
-## IOT bridge
-
-The exe embeds the official driver's `iot_manager` 0.1.8 (`iot_manager_rs.exe` and its helper
-services, from `MonsGeek_V4_Driver_500.3.4`; see [vendor/iot_manager](vendor/iot_manager/README.md)).
-This app doesn't use it. It's there for the MonsGeek web driver, which needs it running locally.
-Settings › IOT bridge › **Start** unpacks it to `%APPDATA%/Monsgeek App/iot_manager` and starts
-it hidden. It listens on 127.0.0.1:6015 and starts `common_hid_rs.exe` on 127.0.0.1:3838.
-**Stop** ends both, including a copy that the official driver started. The bridge keeps running
-after the app closes. Don't change settings from the web driver and this app at the same time.
 
 ## Known limits
 

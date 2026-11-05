@@ -3697,7 +3697,6 @@ dependencies = [
  "embed-resource",
  "gpui-kit",
  "hidapi",
- "miniz_oxide 0.8.9",
  "raw-window-handle",
  "serde",
  "serde_json",
