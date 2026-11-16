@@ -1,11 +1,15 @@
 //! App state and everything that talks to the keyboard. Rendering lives in ui/.
 
 mod features;
+mod history;
 mod pickers;
+mod profiles;
 pub use pickers::{to_hsla as pickers_to_hsla, Pickers};
 mod tools;
 pub use features::*;
 pub use tools::*;
+pub use history::History;
+pub use profiles::PROFILES;
 
 use crate::config::Config;
 use crate::devices::{self, DeviceDef, Layout};
@@ -164,10 +168,13 @@ pub struct Device {
     pub committed_lighting: Lighting,
 }
 
-pub struct Toast {
-    pub id: u64,
-    pub text: String,
-    pub error: bool,
+/// What to do when a keyboard job fails (beyond the generic "is the keyboard still there?" check).
+pub enum OnFail {
+    /// Show the error in a notification.
+    Notify,
+    /// The active profile may now be unknown: drop the connection and ask for a reconnect
+    /// rather than writing with stale UI settings.
+    Reconnect,
 }
 
 pub struct AppView {
@@ -186,9 +193,17 @@ pub struct AppView {
     pub paint: Option<bool>,
     pub slider_bounds: Rc<RefCell<HashMap<SliderId, Bounds<Pixels>>>>,
     pub kb_width: Rc<Cell<f32>>,
-    pub toasts: Vec<Toast>,
+    /// Interface size relative to the default (1.0 at a 14 px base font), set each frame.
+    pub ui_scale: f32,
+    /// Notifications waiting for the next render (pushing one needs the window).
+    pub pending_notes: Vec<(String, bool)>,
+    /// Undo and redo for key settings, remaps and lighting.
+    pub history: History,
+    /// Connect automatically when a keyboard appears (off after the user disconnects).
+    pub auto_connect: bool,
     pub busy: usize,
-    pub confirm_reset: bool,
+    /// The (dark, base font size) last written into the kit theme.
+    pub applied_theme: Option<(bool, f32)>,
     /// Created with the window (see `init_pickers`).
     pub pickers: Option<Pickers>,
     /// The page area's scroll position, eased on mouse-wheel input.
@@ -209,7 +224,6 @@ pub struct AppView {
     stream_gen: u64,
     key_gen: u64,
     light_gen: u64,
-    toast_id: u64,
     /// Lighting preview: animation clock, recent key presses, and whether its redraw loop runs.
     pub light_clock: std::time::Instant,
     pub light_presses: Vec<crate::light_preview::Press>,
@@ -222,7 +236,7 @@ impl AppView {
             features: Features::default(),
             tools: Tools::new(&config),
             focus: cx.focus_handle(),
-            theme: Theme::new(),
+            theme: Theme::dark(),
             config,
             page: Page::Performance,
             status: Status::Idle,
@@ -235,9 +249,12 @@ impl AppView {
             paint: None,
             slider_bounds: Rc::new(RefCell::new(HashMap::new())),
             kb_width: Rc::new(Cell::new(900.0)),
-            toasts: Vec::new(),
+            ui_scale: 1.0,
+            pending_notes: Vec::new(),
+            history: History::default(),
+            auto_connect: true,
             busy: 0,
-            confirm_reset: false,
+            applied_theme: None,
             pickers: None,
             content_scroll: Default::default(),
             travel: vec![0.0; crate::protocol::MATRIX_KEYS],
@@ -251,7 +268,6 @@ impl AppView {
             stream_gen: 0,
             key_gen: 0,
             light_gen: 0,
-            toast_id: 0,
             light_clock: std::time::Instant::now(),
             light_presses: Vec::new(),
             light_ticking: false,
@@ -326,33 +342,54 @@ impl AppView {
         self.light_presses.push(press);
     }
 
+    /// Queues a notification. Errors stay until dismissed; other messages hide themselves.
     pub fn toast(&mut self, text: impl Into<String>, error: bool, cx: &mut Context<Self>) {
-        self.toast_id += 1;
-        let id = self.toast_id;
-        self.toasts.push(Toast {
-            id,
-            text: text.into(),
-            error,
-        });
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(4)).await;
-            this.update(cx, |s, cx| {
-                s.toasts.retain(|t| t.id != id);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        self.pending_notes.push((text.into(), error));
         cx.notify();
     }
 
-    /// Run a blocking keyboard job off the UI thread, then apply its result.
+    /// Saves the app settings, reporting a failure instead of dropping it.
+    pub fn save_config(&mut self, cx: &mut Context<Self>) {
+        if let Err(e) = self.config.save() {
+            self.toast(format!("Couldn't save settings: {e}"), true, cx);
+        }
+    }
+
+    /// Run a blocking keyboard job off the UI thread, then apply its result. A failure shows
+    /// a notification.
     pub(crate) fn run<T: Send + 'static>(
         &mut self,
         cx: &mut Context<Self>,
         label: &'static str,
         job: impl FnOnce(&mut KeyboardClient) -> Result<T> + Send + 'static,
         done: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+    ) {
+        self.run_or(cx, label, OnFail::Notify, job, done, |_, _| {});
+    }
+
+    /// Like `run`, but `revert` undoes the optimistic UI change when the job fails, so the
+    /// pages never show a value the keyboard doesn't hold.
+    pub(crate) fn run_reverting<T: Send + 'static>(
+        &mut self,
+        cx: &mut Context<Self>,
+        label: &'static str,
+        job: impl FnOnce(&mut KeyboardClient) -> Result<T> + Send + 'static,
+        done: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+        revert: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    ) {
+        self.run_or(cx, label, OnFail::Notify, job, done, revert);
+    }
+
+    /// The general form of `run`: `on_fail` picks the failure handling and `revert` runs
+    /// first on any failure.
+    pub(crate) fn run_or<T: Send + 'static>(
+        &mut self,
+        cx: &mut Context<Self>,
+        label: &'static str,
+        on_fail: OnFail,
+        job: impl FnOnce(&mut KeyboardClient) -> Result<T> + Send + 'static,
+        done: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+        revert: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
     ) {
         let Some(device) = self.device.as_ref() else {
             return;
@@ -373,16 +410,20 @@ impl AppView {
                 match r {
                     Ok(v) => done(s, v, cx),
                     Err(e) => {
-                        if label == "Switching profile" || label == "Factory reset" {
-                            // The active profile may now be unknown. Require a fresh
-                            // connection rather than writing with stale UI settings
-                            // (transitioning, so disconnect drops pending edits).
-                            s.disconnect(cx);
-                            s.status = Status::Error(format!(
-                                "{label} failed: {e:#}. Reconnect to read the keyboard again."
-                            ));
-                        } else {
-                            s.toast(format!("{label} failed: {e:#}"), true, cx);
+                        revert(s, cx);
+                        if s.keyboard_gone() {
+                            s.lost_keyboard(cx);
+                            return;
+                        }
+                        match on_fail {
+                            OnFail::Reconnect => {
+                                // Transitioning, so disconnect drops pending edits.
+                                s.disconnect(cx);
+                                s.status = Status::Error(format!(
+                                    "{label} failed: {e:#}. Reconnect to read the keyboard again."
+                                ));
+                            }
+                            OnFail::Notify => s.toast(format!("{label} failed: {e:#}"), true, cx),
                         }
                     }
                 }
@@ -437,6 +478,86 @@ impl AppView {
         .detach();
     }
 
+    /// The Disconnect / Exit demo button: also stops connecting automatically until the user
+    /// connects again.
+    pub fn disconnect_by_user(&mut self, cx: &mut Context<Self>) {
+        if !self.demo {
+            self.auto_connect = false;
+        }
+        self.disconnect(cx);
+    }
+
+    /// The Connect button: connects now and again whenever the keyboard is plugged back in.
+    pub fn connect_by_user(&mut self, demo: bool, cx: &mut Context<Self>) {
+        if !demo {
+            self.auto_connect = true;
+        }
+        self.connect(demo, cx);
+    }
+
+    /// Whether a job error means the keyboard went away (as opposed to a refused command).
+    pub(crate) fn keyboard_gone(&self) -> bool {
+        let Some(api) = self.device.as_ref().and_then(|d| d.api.as_ref()) else {
+            return false;
+        };
+        let mut api = crate::protocol::hid::lock(api);
+        !crate::protocol::hid::keyboard_present(&mut api)
+    }
+
+    /// The keyboard was unplugged: drop the connection (pending edits can't be sent) and wait
+    /// for it to come back.
+    pub(crate) fn lost_keyboard(&mut self, cx: &mut Context<Self>) {
+        if self.device.is_none() {
+            return;
+        }
+        self.transitioning = true;
+        self.disconnect(cx);
+        self.status = Status::Error(
+            "The keyboard was unplugged. Plug it back in and it reconnects.".into(),
+        );
+        cx.notify();
+    }
+
+    /// Watches for the keyboard while no keyboard is connected, and connects when one appears
+    /// (at launch, and after an unplug). Runs for the app's lifetime.
+    pub fn watch_for_keyboard(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let mut was_present = false;
+            loop {
+                let waiting = this
+                    .update(cx, |s, _| {
+                        s.device.is_none()
+                            && s.auto_connect
+                            && s.draining.is_none()
+                            && matches!(s.status, Status::Idle | Status::Error(_))
+                    })
+                    .ok();
+                let Some(waiting) = waiting else { break };
+                if waiting {
+                    let present = cx
+                        .background_executor()
+                        .spawn(async {
+                            HidApi::new()
+                                .map(|mut api| crate::protocol::hid::keyboard_present(&mut api))
+                                .unwrap_or(false)
+                        })
+                        .await;
+                    // Only on a change, so a keyboard that can't be opened (the official
+                    // driver holds it) isn't retried in a loop.
+                    if present && !was_present {
+                        this.update(cx, |s, cx| s.connect(false, cx)).ok();
+                    }
+                    was_present = present;
+                } else {
+                    // Connected (or connecting): the next wait starts from "not seen".
+                    was_present = false;
+                }
+                cx.background_executor().timer(Duration::from_millis(1500)).await;
+            }
+        })
+        .detach();
+    }
+
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         self.end_calibration(cx);
         self.stop_polling_test(cx);
@@ -458,6 +579,7 @@ impl AppView {
         self.device = None;
         self.demo = false;
         self.selection.clear();
+        self.history.clear();
         self.features = Features::default();
         self.travel.fill(0.0);
         self.peaks.fill(0.0);
@@ -499,9 +621,7 @@ impl AppView {
         self.page = page;
         self.content_scroll.reset();
         self.selection.clear();
-        self.confirm_reset = false;
         self.features.adv = None;
-        self.features.switch_menu = false;
         if page == Page::Tester && self.features.tester_tab == TesterTab::Switch {
             self.start_stream(cx);
         }
@@ -521,9 +641,11 @@ impl AppView {
         self.features.adv = None;
         self.features.macro_draft = None;
         self.selection.clear();
-        self.run(
+        self.history.clear();
+        self.run_or(
             cx,
             "Switching profile",
+            OnFail::Reconnect,
             move |kb| {
                 // Reload even if switching fails: a partial USB failure must not leave
                 // the UI showing the previous profile while edits target another one.
@@ -541,6 +663,7 @@ impl AppView {
                     s.toast(format!("Switching profile failed: {e}"), true, cx);
                 }
             },
+            |_, _| {},
         );
     }
 
@@ -603,10 +726,14 @@ impl AppView {
         let Some(d) = self.device.as_mut() else {
             return;
         };
+        let before = d.keys.clone();
         for &i in &indices {
             if let Some(k) = d.keys.get_mut(i) {
                 f(k);
             }
+        }
+        if d.keys != before {
+            self.history.before_keys(d.profile, &before);
         }
         self.key_gen += 1;
         let gen = self.key_gen;
@@ -631,6 +758,9 @@ impl AppView {
         };
         let (prev, next) = (d.committed.clone(), d.keys.clone());
         let profile = d.profile;
+        self.history.close_keys();
+        // While earlier writes are in flight the worker diffs against what last reached the
+        // keyboard, so an unchanged table may still need sending.
         if prev == next && self.busy == 0 {
             return;
         }
@@ -675,11 +805,12 @@ impl AppView {
         match d.id {
             SliderId::Debounce => {
                 let ms = self.device.as_ref().map_or(0, |d| d.debounce);
-                self.run(
+                self.run_reverting(
                     cx,
                     "Setting debounce",
                     move |kb| kb.set_debounce(ms),
                     |_, _, _| {},
+                    |s, cx| s.reread_settings(cx),
                 );
             }
             SliderId::Stability => self.write_options(cx),
@@ -772,12 +903,16 @@ impl AppView {
             d.fn_layer,
             fn_system(d.options.os),
         );
-        if layer == 0 {
-            d.keymap[index] = action;
-        } else {
-            d.fnmap[index] = action;
+        let map = if layer == 0 { &mut d.keymap } else { &mut d.fnmap };
+        let Some(slot) = map.get_mut(index) else {
+            return;
+        };
+        let before = std::mem::replace(slot, action);
+        if before == action {
+            return;
         }
-        self.run(
+        self.history.before_remap(profile, layer, fn_layer, index, before);
+        self.run_reverting(
             cx,
             "Remapping key",
             move |kb| {
@@ -788,6 +923,14 @@ impl AppView {
                 }
             },
             |_, _, _| {},
+            move |s, _| {
+                if let Some(d) = s.device.as_mut().filter(|d| d.profile == profile) {
+                    let map = if layer == 0 { &mut d.keymap } else { &mut d.fnmap };
+                    if (layer == 0 || d.fn_layer == fn_layer) && map.get(index) == Some(&action) {
+                        map[index] = before;
+                    }
+                }
+            },
         );
     }
 
@@ -868,7 +1011,11 @@ impl AppView {
         let Some(d) = self.device.as_mut() else {
             return;
         };
+        let before = d.lighting;
         f(&mut d.lighting);
+        if d.lighting != before {
+            self.history.before_lighting(d.profile, before);
+        }
         self.light_gen += 1;
         let gen = self.light_gen;
         cx.spawn(async move |this, cx| {
@@ -891,6 +1038,7 @@ impl AppView {
             return;
         };
         let l = d.lighting;
+        self.history.close_lighting();
         if l == d.committed_lighting && self.busy == 0 {
             return;
         }
@@ -923,15 +1071,41 @@ impl AppView {
         self.write_options(cx);
     }
 
+    /// Writes the options; on failure the pages go back to what the keyboard reports.
     fn write_options(&mut self, cx: &mut Context<Self>) {
         let Some(o) = self.device.as_ref().map(|d| d.options) else {
             return;
         };
-        self.run(
+        self.run_reverting(
             cx,
             "Saving options",
             move |kb| kb.set_options(&o),
             |_, _, _| {},
+            |s, cx| s.reread_settings(cx),
+        );
+    }
+
+    /// Reads options, debounce and polling rate back after a failed write, so the pages show
+    /// what the keyboard really holds.
+    pub(crate) fn reread_settings(&mut self, cx: &mut Context<Self>) {
+        let rate = self.device.as_ref().is_some_and(|d| d.info.supports_report_rate);
+        self.run(
+            cx,
+            "Reading settings",
+            move |kb| {
+                let r = if rate { Some(kb.get_report_rate()?) } else { None };
+                Ok((kb.get_options()?, kb.get_debounce()?, r))
+            },
+            |s, (o, debounce, rate), cx| {
+                if let Some(d) = s.device.as_mut() {
+                    d.options = o;
+                    d.debounce = debounce;
+                    if rate.is_some() {
+                        d.report_rate = rate;
+                    }
+                }
+                cx.notify();
+            },
         );
     }
 
@@ -943,10 +1117,11 @@ impl AppView {
         self.key_gen += 1;
         self.light_gen += 1;
         self.transitioning = true;
-        self.confirm_reset = false;
-        self.run(
+        self.history.clear();
+        self.run_or(
             cx,
             "Factory reset",
+            OnFail::Reconnect,
             |kb| {
                 kb.factory_reset()?;
                 let fresh = reload(kb)?;
@@ -967,6 +1142,7 @@ impl AppView {
                 s.features.perkey = None;
                 s.toast("Keyboard restored to factory settings", false, cx);
             },
+            |_, _| {},
         );
     }
 
@@ -986,8 +1162,8 @@ impl AppView {
         };
         let buffer = stream.buffer.clone();
         let peaks = stream.peaks.clone();
-        buffer.lock().unwrap().fill(0);
-        peaks.lock().unwrap().fill(0);
+        crate::protocol::hid::lock(&buffer).fill(0);
+        crate::protocol::hid::lock(&peaks).fill(0);
         let steps = d.info.steps_per_mm;
         self.streaming = true;
         self.travel.fill(0.0);
@@ -1070,7 +1246,7 @@ impl AppView {
 
     pub fn reset_peaks(&mut self, cx: &mut Context<Self>) {
         if let Some(stream) = self.device.as_ref().and_then(|d| d.notify.as_ref()) {
-            stream.peaks.lock().unwrap().fill(0);
+            crate::protocol::hid::lock(&stream.peaks).fill(0);
         }
         self.peaks.iter_mut().for_each(|p| *p = 0.0);
         cx.notify();

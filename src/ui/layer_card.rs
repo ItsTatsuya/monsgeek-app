@@ -30,7 +30,9 @@ fn summary(l: &Lighting) -> String {
 impl AppView {
     pub(super) fn layer_lighting_card(&self, cx: &mut Cx) -> Div {
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let looks = self.looks();
         let (profile, fn_layer, shown) = (d.profile, d.options.fn_index, d.lighting);
         let applied = if looks.fn_layers.get(fn_layer as usize).copied().flatten().is_some() {
@@ -57,8 +59,8 @@ impl AppView {
             let on = looks.enabled && applied == Some((is_fn, i));
             let swatch = div()
                 .flex_none()
-                .size(px(22.))
-                .rounded(px(6.))
+                .size(u(22.))
+                .rounded(u(6.))
                 .border_1()
                 .border_color(t.border_strong)
                 .map(|el| match look {
@@ -75,10 +77,10 @@ impl AppView {
             div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
-                .px(px(10.))
-                .py(px(8.))
-                .rounded(px(8.))
+                .gap(u(12.))
+                .px(u(10.))
+                .py(u(8.))
+                .rounded(u(8.))
                 .border_1()
                 .border_color(if on { t.accent } else { transparent_black() })
                 .bg(if on { t.accent_soft } else { t.surface_2 })
@@ -86,19 +88,19 @@ impl AppView {
                 .child(
                     div()
                         .flex_1()
-                        .min_w(px(0.))
+                        .min_w(u(0.))
                         .flex()
                         .flex_col()
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(u(6.))
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(if is_fn { format!("Fn layer {}", i + 1) } else { format!("Profile {}", i + 1) })
-                                .when(live, |el| el.child(div().size(px(7.)).rounded_full().bg(t.ok))),
+                                .when(live, |el| el.child(div().size(u(7.)).rounded_full().bg(t.ok))),
                         )
-                        .child(div().text_color(t.muted).text_size(px(12.)).child(match look {
+                        .child(div().text_color(t.muted).text_size(u(12.)).child(match look {
                             Some(l) => summary(&l),
                             None if is_fn => "No change".into(),
                             None => "Keyboard's own lighting".into(),
@@ -121,13 +123,13 @@ impl AppView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(u(6.))
                 .when(!enabled, |el| el.opacity(0.6))
                 .child(self.section_label("Profiles"))
                 .children((0..PROFILE_COUNT).map(|i| row(false, i, i == profile as usize)))
-                .child(div().pt(px(8.)).child(self.section_label("Fn layers")))
+                .child(div().pt(u(8.)).child(self.section_label("Fn layers")))
                 .children((0..looks.fn_layers.len()).map(|i| row(true, i, i == fn_layer as usize)))
-                .child(div().pt(px(6.)).text_color(t.muted).text_size(px(12.5)).child(
+                .child(div().pt(u(6.)).text_color(t.muted).text_size(u(12.5)).child(
                     "To set a look: pick the lighting above, then click \"Use current lighting\" on the profile or Fn layer it belongs to.",
                 )),
         )

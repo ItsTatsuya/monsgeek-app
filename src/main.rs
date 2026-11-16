@@ -1,5 +1,6 @@
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
 
+mod actions;
 mod app;
 mod assets;
 mod backup;
@@ -45,6 +46,8 @@ fn main() {
     let demo = arg("--demo").is_some();
     // --shot opens the window off-screen without focus, for screenshots that don't disturb the desktop.
     let shot = arg("--shot").is_some();
+    // --tray starts hidden in the tray (how Windows opens the app at sign-in).
+    let tray = arg("--tray").is_some();
     // --page <name> opens the app on a given page (handy for screenshots).
     let start_page = arg("--page")
         .and_then(|i| args.get(i + 1))
@@ -54,7 +57,7 @@ fn main() {
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             gpui::init(cx);
-            theme::apply_to_kit(cx);
+            actions::bind(cx);
             assets::load_fonts(cx);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
@@ -62,7 +65,7 @@ fn main() {
                 }
             })
             .detach();
-            let config = config::Config::load();
+            let (config, config_warning) = config::Config::load();
             // 1240 × 820 content, shrunk to fit the screen's work area (minus the taskbar) so the
             // whole window, title bar included, opens on screen at any size or DPI scale. The
             // bounds are the content area; the title bar and frame need about 80 px more.
@@ -92,7 +95,7 @@ fn main() {
                 }),
                 window_background: WindowBackgroundAppearance::Opaque,
                 window_min_size: Some(size(px(width.min(900.)), px(height.min(600.)))),
-                focus: !shot,
+                focus: !shot && !tray,
                 ..Default::default()
             };
             cx.open_window(options, move |window, cx| {
@@ -106,14 +109,31 @@ fn main() {
                         // and move the window off-screen straight away.
                         win::move_offscreen(view.tools.hwnd);
                     }
+                    view.sync_theme(window, cx);
                     view.init_pickers(window, cx);
                     view.sync_auto(cx);
                     view.start_page = start_page;
+                    if let Some(w) = config_warning.clone() {
+                        view.toast(w, true, cx);
+                    }
                     if demo {
                         view.connect(true, cx);
                     }
+                    // Connects as soon as a keyboard is plugged in (now, later, or after
+                    // leaving the demo).
+                    view.watch_for_keyboard(cx);
+                    if tray && view.hides_to_tray() {
+                        win::show_window(view.tools.hwnd, false);
+                    }
                     view
                 });
+                // Follow Windows' light/dark setting while the window is open.
+                let appearance = view.downgrade();
+                window
+                    .observe_window_appearance(move |window, cx| {
+                        appearance.update(cx, |view, cx| view.sync_theme(window, cx)).ok();
+                    })
+                    .detach();
                 let handle = view.downgrade();
                 window.on_window_should_close(cx, move |window, cx| {
                     let shutdown = handle.update(cx, |view, cx| {
@@ -149,7 +169,7 @@ fn main() {
                 cx.new(|cx| gpui::base::Root::new(view, window, cx))
             })
             .expect("open window");
-            if !shot {
+            if !shot && !tray {
                 cx.activate(true);
             }
         });

@@ -16,6 +16,17 @@ pub struct HidTransport {
     product: String,
 }
 
+/// Whether a MonsGeek config collection is plugged in (refreshes the device list first).
+pub fn keyboard_present(api: &mut HidApi) -> bool {
+    if api.refresh_devices().is_err() {
+        return true; // Unknown: don't treat it as unplugged.
+    }
+    let found = api
+        .device_list()
+        .any(|d| d.vendor_id() == VENDOR_ID && d.usage_page() == CONFIG_USAGE_PAGE && d.usage() == CONFIG_USAGE);
+    found
+}
+
 impl HidTransport {
     /// Open the first MonsGeek/Akko config collection (VID 0x3151, usage page 0xFFFF, usage 2).
     pub fn open(api: &HidApi) -> Result<Self> {
@@ -72,6 +83,11 @@ impl Transport for HidTransport {
     }
 }
 
+/// Locks a mutex, recovering the data if a panicking thread poisoned it.
+pub fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Latest travel per matrix key in raw steps, filled by a stream reader.
 pub type TravelBuffer = Arc<Mutex<Vec<u16>>>;
 
@@ -119,20 +135,32 @@ impl TravelStream {
         let p = peaks.clone();
         let thread = std::thread::spawn(move || {
             let mut buf = [0u8; REPORT_SIZE + 1];
+            // Report a failing read once per run of errors, so the app can check for an unplug.
+            let mut failing = false;
             while !s.load(Ordering::Relaxed) {
                 match read(&mut buf) {
-                    Ok(0) => {}
+                    Ok(0) => failing = false,
                     Ok(n) => {
+                        failing = false;
                         if let Some((i, v)) = parse_travel_report(&buf[..n]) {
-                            b.lock().unwrap()[i] = v;
-                            let mut peaks = p.lock().unwrap();
+                            // A poisoned lock only means another reader panicked mid-update;
+                            // the u16 values are still usable.
+                            lock(&b)[i] = v;
+                            let mut peaks = lock(&p);
                             peaks[i] = peaks[i].max(v);
-                            *c.lock().unwrap() += 1;
+                            *lock(&c) += 1;
                         } else if let (Some(e), Some(tx)) = (parse_vendor_report(&buf[..n]), &events) {
                             let _ = tx.try_send(e);
                         }
                     }
-                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                    Err(_) => {
+                        if !std::mem::replace(&mut failing, true) {
+                            if let Some(tx) = &events {
+                                let _ = tx.try_send(VendorEvent::Lost);
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100))
+                    }
                 }
             }
         });
@@ -192,5 +220,31 @@ mod tests {
         assert_eq!(stream.buffer.lock().unwrap()[14], 0);
         assert_eq!(stream.peaks.lock().unwrap()[14], 350);
         assert_eq!(*stream.count.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn failing_reads_report_lost_once_per_run_of_errors() {
+        let (tx, rx) = async_channel::unbounded();
+        let mut call = 0;
+        let stream = TravelStream::spawn(
+            move |_buf| {
+                call += 1;
+                match call {
+                    // Two failures in a row, a good read, then failures again.
+                    1 | 2 | 4 | 5 => Err(anyhow!("device gone")),
+                    3 => Ok(0),
+                    _ => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        Ok(0)
+                    }
+                }
+            },
+            Some(tx),
+        );
+        let first = rx.recv_blocking().unwrap();
+        let second = rx.recv_blocking().unwrap();
+        drop(stream);
+        assert_eq!((first, second), (VendorEvent::Lost, VendorEvent::Lost));
+        assert!(rx.try_recv().is_err(), "one report per run of errors");
     }
 }

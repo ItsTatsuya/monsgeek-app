@@ -23,8 +23,9 @@ fn fmt_fw(fw: u16) -> String {
 
 impl AppView {
     pub(super) fn switch_type_row(&self, cx: &mut Cx) -> Div {
-        let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let first = d.layout.keys.first().map(|k| d.keys[k.index].switch_type);
         let common = first.filter(|&f| d.layout.keys.iter().all(|k| d.keys[k.index].switch_type == f));
         let label = match common {
@@ -34,54 +35,35 @@ impl AppView {
                 .find(|s| s.0 == c)
                 .map_or(format!("Type {c}"), |s| s.1.to_string()),
         };
-        let open = self.features.switch_menu;
-        let menu = div()
-            .absolute()
-            .top(px(38.))
-            .left_0()
-            .w(px(240.))
-            .p(px(4.))
-            .rounded(px(10.))
-            .bg(t.surface)
-            .border_1()
-            .border_color(t.border_strong)
-            .shadow_lg()
-            .children(SWITCH_TYPES.iter().map(|&(id, name)| {
-                let active = common == Some(id);
-                div()
-                    .id(("switch", id as usize))
-                    .px(px(10.))
-                    .py(px(7.))
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .text_size(px(13.))
-                    .when(active, |el| el.bg(t.accent_soft).text_color(t.accent_strong))
-                    .hover(|s| s.bg(t.hover))
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_switch_type(id, cx)))
-                    .child(name)
-            }));
+        let view = cx.entity().downgrade();
         self.setting_row(
             "Switch type",
             "Tells the firmware which magnetic switch is installed so travel is measured correctly.",
-            div()
-                .relative()
-                .child(
-                    self.button("switch-type", format!("{label}  ▾"), Btn::Normal)
-                        .min_w(px(200.))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.features.switch_menu = !this.features.switch_menu;
-                            cx.notify();
-                        })),
-                )
-                .when(open, |el| el.child(deferred(menu).with_priority(1))),
+            Button::new("switch-type")
+                .label(label)
+                .dropdown_caret(true)
+                .min_w(u(200.))
+                .disabled(self.transitioning)
+                .dropdown_menu(move |menu, _, _| {
+                    SWITCH_TYPES.iter().fold(menu, |menu, &(id, name)| {
+                        let view = view.clone();
+                        menu.item(
+                            gpui::component::menu::PopupMenuItem::new(name)
+                                .checked(common == Some(id))
+                                .on_click(move |_, _, cx| {
+                                    view.update(cx, |this, cx| this.set_switch_type(id, cx)).ok();
+                                }),
+                        )
+                    })
+                }),
         )
-        .flex_col()
-        .items_start()
     }
 
     pub(super) fn backup_card(&self, cx: &mut Cx) -> Div {
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let b = &self.features.backup;
         let busy = b.busy.as_ref().map(|c| c.lock().map(|g| g.clone()).unwrap_or_default());
         let idle = busy.is_none() && !self.transitioning;
@@ -89,30 +71,30 @@ impl AppView {
         let buttons = div()
             .flex()
             .flex_wrap()
-            .gap(px(8.))
+            .gap(u(8.))
             .child(
                 self.button("backup", "Back up keyboard", Btn::Primary)
-                    .when(!idle, |b| b.opacity(0.45))
-                    .when(idle, |b| b.on_click(cx.listener(|this, _, _, cx| this.back_up(cx)))),
+                    .disabled(!idle)
+                    .on_click(cx.listener(|this, _, _, cx| this.back_up(cx))),
             )
             .child(
                 self.button("restore-open", "Restore from file…", Btn::Normal)
-                    .when(!idle, |b| b.opacity(0.45))
-                    .when(idle, |b| b.on_click(cx.listener(|this, _, _, cx| this.open_backup(cx)))),
+                    .disabled(!idle)
+                    .on_click(cx.listener(|this, _, _, cx| this.open_backup(cx))),
             );
         let progress = busy.map(|(done, total, label)| {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(u(6.))
                 .child(
                     div()
-                        .h(px(6.))
+                        .h(u(6.))
                         .rounded_full()
                         .bg(t.track)
                         .child(div().h_full().rounded_full().bg(t.accent).w(relative(done as f32 / total.max(1) as f32))),
                 )
-                .child(div().text_color(t.muted).text_size(px(12.)).child(label))
+                .child(div().text_color(t.muted).text_size(u(12.)).child(label))
         });
 
         let file = b.file.as_ref().map(|(file, name)| {
@@ -122,9 +104,9 @@ impl AppView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(10.))
-                .p(px(14.))
-                .rounded(px(10.))
+                .gap(u(10.))
+                .p(u(14.))
+                .rounded(u(10.))
                 .bg(t.surface_2)
                 .border_1()
                 .border_color(t.border)
@@ -143,13 +125,13 @@ impl AppView {
                             }),
                         ),
                 )
-                .child(div().text_color(t.text_2).text_size(px(12.5)).child(format!(
+                .child(div().text_color(t.text_2).text_size(u(12.5)).child(format!(
                     "{} · firmware {} · {}",
                     file.device.name,
                     fmt_fw(file.device.firmware),
                     created.get(..16).unwrap_or(&created)
                 )))
-                .child(div().text_color(t.muted).text_size(px(12.5)).child(format!(
+                .child(div().text_color(t.muted).text_size(u(12.5)).child(format!(
                     "4 profiles · {} Fn {} · {} macros · lighting · options{}",
                     file.fn_layers.len(),
                     if file.fn_layers.len() == 1 { "layer" } else { "layers" },
@@ -182,13 +164,13 @@ impl AppView {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(6.))
+                            .gap(u(6.))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child("Restoring will change:"))
                             .children(plan.lines().into_iter().map(|l| {
                                 div()
                                     .flex()
-                                    .gap(px(8.))
-                                    .text_size(px(13.))
+                                    .gap(u(8.))
+                                    .text_size(u(13.))
                                     .child(div().text_color(t.muted).child("•"))
                                     .child(l)
                             }))
@@ -196,14 +178,14 @@ impl AppView {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(10.))
-                                    .pt(px(4.))
+                                    .gap(u(10.))
+                                    .pt(u(4.))
                                     .child(
                                         self.button("restore", "Restore to keyboard", Btn::Danger)
-                                            .when(!idle, |b| b.opacity(0.45))
-                                            .when(idle, |b| b.on_click(cx.listener(|this, _, _, cx| this.restore_backup(cx)))),
+                                            .disabled(!idle)
+                                            .on_click(cx.listener(|this, _, _, cx| this.restore_backup(cx))),
                                     )
-                                    .child(div().text_color(t.muted).text_size(px(12.5)).child("Keep the keyboard plugged in until it finishes.")),
+                                    .child(div().text_color(t.muted).text_size(u(12.5)).child("Keep the keyboard plugged in until it finishes.")),
                             )
                     }
                 }))
@@ -216,7 +198,7 @@ impl AppView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(14.))
+                .gap(u(14.))
                 .child(buttons)
                 .children(progress)
                 .children(b.error.clone().map(|e| self.banner(e, t.danger)))

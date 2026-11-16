@@ -16,19 +16,24 @@ use crate::app::{
 use crate::devices::VisualKey;
 use crate::keycodes::{action_description, action_label, palette, PaletteGroup};
 use crate::protocol::{KeyAction, KeyHe};
-use crate::theme::{NUM_FONT, UI_FONT};
+use crate::actions::*;
+use crate::theme::{u, NUM_FONT, UI_FONT};
+use gpui::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui::component::menu::DropdownMenu as _;
+use gpui::component::notification::Notification;
+use gpui::component::switch::Switch;
+use gpui::component::{Disableable as _, Selectable as _, Sizable as _, WindowExt as _};
 use gpui::prelude::*;
 use gpui::*;
 use std::rc::Rc;
 
 type Cx<'a> = Context<'a, AppView>;
 
+/// Button emphasis, by meaning: `Primary` only for the default commit of a decision area.
 #[derive(Clone, Copy, PartialEq)]
 enum Btn {
     Normal,
     Primary,
-    /// Tinted in the actuation colour.
-    Actuation,
     Ghost,
     Danger,
 }
@@ -218,23 +223,69 @@ fn hid(a: &KeyAction) -> i32 {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Cx) -> impl IntoElement {
+        self.sync_theme(window, cx);
         let t = self.theme;
-        // The keyboard is sized from the window: content width = window − sidebar − page padding.
+        // The keyboard is sized from the window: content width = window − sidebar − page
+        // padding (both in rems, so they grow with the interface size).
+        let scale = f32::from(window.rem_size()) / crate::config::BASE_FONT;
+        self.ui_scale = scale;
         self.kb_width
-            .set(f32::from(window.viewport_size().width) - 232.0 - 56.0);
+            .set(f32::from(window.viewport_size().width) - (232.0 + 56.0) * scale);
+        for (text, error) in std::mem::take(&mut self.pending_notes) {
+            // Bottom right, clear of the header's profile switcher.
+            let note = if error {
+                Notification::error(text).autohide(false)
+            } else {
+                Notification::info(text)
+            }
+            .placement(Anchor::BottomRight);
+            window.push_notification(note, cx);
+        }
+        if let Some((profile, file)) = self.features.pending_import.take() {
+            self.confirm_import(profile, file, window, cx);
+        }
         let body = if self.device.is_some() {
             self.shell(window, cx).into_any_element()
         } else {
             self.connect_screen(cx).into_any_element()
         };
-        // Keys go to the app unless a kit input (the colour picker's hex field) has focus.
-        if window.focused(cx).is_none() {
+        // While the app reads raw keys (macro recording, calibration, the polling test, typing
+        // into a value box) every key must reach it: keep focus on the root, so a focused
+        // button can't take Space or Enter, and drop the key context, so shortcuts don't fire.
+        let capturing = self.recording()
+            || self.calibration_active()
+            || self.tools.polling()
+            || self.features.edit.is_some();
+        // Otherwise keys go to the app unless a control (a kit input, a button) has focus.
+        if window.focused(cx).is_none() || (capturing && !self.focus.is_focused(window)) {
             self.focus.focus(window, cx);
         }
         div()
             .relative()
             .size_full()
+            .when(!capturing, |el| el.key_context(CONTEXT))
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &Undo, _, cx| this.undo(cx)))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| this.redo(cx)))
+            .on_action(cx.listener(|this, _: &SelectAllKeys, _, cx| this.select_all_keys(cx)))
+            .on_action(cx.listener(|this, _: &ClearSelection, _, cx| {
+                this.selection.clear();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ZoomIn, w, cx| this.zoom(1, w, cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, w, cx| this.zoom(-1, w, cx)))
+            .on_action(cx.listener(|this, _: &ZoomReset, w, cx| this.zoom(0, w, cx)))
+            .on_action(cx.listener(|this, _: &GoPerformance, _, cx| this.go(Page::Performance, cx)))
+            .on_action(cx.listener(|this, _: &GoRemap, _, cx| this.go(Page::Remap, cx)))
+            .on_action(cx.listener(|this, _: &GoAdvanced, _, cx| this.go(Page::Advanced, cx)))
+            .on_action(cx.listener(|this, _: &GoLighting, _, cx| this.go(Page::Lighting, cx)))
+            .on_action(cx.listener(|this, _: &GoTester, _, cx| this.go(Page::Tester, cx)))
+            .on_action(cx.listener(|this, _: &GoAutoProfiles, _, cx| this.go(Page::AutoProfiles, cx)))
+            .on_action(cx.listener(|this, _: &GoSettings, _, cx| this.go(Page::Settings, cx)))
+            .on_action(cx.listener(|this, _: &Profile1, _, cx| this.set_profile(0, cx)))
+            .on_action(cx.listener(|this, _: &Profile2, _, cx| this.set_profile(1, cx)))
+            .on_action(cx.listener(|this, _: &Profile3, _, cx| this.set_profile(2, cx)))
+            .on_action(cx.listener(|this, _: &Profile4, _, cx| this.set_profile(3, cx)))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
                 if this.calibration_active() {
                     cx.stop_propagation();
@@ -274,7 +325,7 @@ impl Render for AppView {
             .bg(t.bg)
             .text_color(t.text)
             .font_family(UI_FONT)
-            .text_size(px(14.))
+            .text_size(u(14.))
             .line_height(relative(1.4))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 if this.drag.is_some() {
@@ -292,13 +343,72 @@ impl Render for AppView {
                 cx.listener(|this, _, _, cx| this.end_drag(cx)),
             )
             .child(body)
-            .child(self.toasts())
     }
 }
 
 impl AppView {
+    /// Keeps the kit theme (mode, colours, base size) in step with the window's appearance and
+    /// the user's choices.
+    pub fn sync_theme(&mut self, window: &mut Window, cx: &mut Cx) {
+        let wanted = (
+            crate::theme::is_dark(self.config.appearance, window),
+            self.config.font_size(),
+        );
+        if self.applied_theme != Some(wanted) {
+            self.applied_theme = Some(wanted);
+            crate::theme::apply(wanted.0, wanted.1, cx);
+            self.theme = crate::theme::Theme::for_mode(wanted.0);
+        }
+    }
+
+    /// Ctrl + / Ctrl − / Ctrl 0: one interface size up, down, or back to the default.
+    fn zoom(&mut self, dir: i32, window: &mut Window, cx: &mut Cx) {
+        use crate::config::{BASE_FONT, UI_SIZES};
+        let now = self.config.font_size();
+        let i = UI_SIZES.iter().position(|&s| s == now).unwrap_or(1) as i32;
+        let next = match dir {
+            0 => BASE_FONT,
+            d => UI_SIZES[(i + d).clamp(0, UI_SIZES.len() as i32 - 1) as usize],
+        };
+        self.set_ui_size(next, window, cx);
+    }
+
+    fn set_ui_size(&mut self, size: f32, window: &mut Window, cx: &mut Cx) {
+        let size = (size != crate::config::BASE_FONT).then_some(size);
+        if self.config.ui_scale == size {
+            return;
+        }
+        self.config.ui_scale = size;
+        self.save_config(cx);
+        self.sync_theme(window, cx);
+        cx.notify();
+    }
+
+    fn set_appearance(&mut self, a: crate::config::Appearance, window: &mut Window, cx: &mut Cx) {
+        self.config.appearance = a;
+        self.save_config(cx);
+        self.sync_theme(window, cx);
+        cx.notify();
+    }
+
+    fn go(&mut self, page: Page, cx: &mut Cx) {
+        if self.device.is_some() {
+            self.set_page(page, cx);
+        }
+    }
+
+    fn select_all_keys(&mut self, cx: &mut Cx) {
+        if self.device.is_some() && matches!(self.page, Page::Performance | Page::Advanced) {
+            self.select_group(|_| true, cx);
+        }
+    }
+}
+
+impl AppView {
+    /// The content area is too narrow for two columns of cards. Measured in design pixels,
+    /// so larger interface sizes switch to one column sooner.
     fn narrow(&self) -> bool {
-        self.kb_width.get() < 800.0
+        self.kb_width.get() / self.ui_scale < 800.0
     }
 
     // ---- widgets -------------------------------------------------------------------
@@ -308,38 +418,14 @@ impl AppView {
         id: impl Into<ElementId>,
         label: impl Into<SharedString>,
         kind: Btn,
-    ) -> Stateful<Div> {
-        let t = self.theme;
-        let (bg, fg, border, hover) = match kind {
-            Btn::Normal => (t.surface_2, t.text, t.border_strong, t.hover),
-            Btn::Primary => (t.accent, t.on_accent, t.accent, t.accent_strong),
-            Btn::Actuation => (t.actuation_soft, t.actuation, t.actuation.opacity(0.45), t.actuation.opacity(0.28)),
-            Btn::Ghost => (transparent_black(), t.text_2, transparent_black(), t.hover),
-            Btn::Danger => (
-                t.danger_soft,
-                t.danger,
-                t.danger.opacity(0.45),
-                t.danger.opacity(0.28),
-            ),
-        };
-        div()
-            .id(id.into())
-            .flex()
-            .items_center()
-            .justify_center()
-            .h(px(34.))
-            .px(px(14.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(border)
-            .bg(bg)
-            .text_color(fg)
-            .font_weight(FontWeight::MEDIUM)
-            .text_size(px(13.))
-            .whitespace_nowrap()
-            .cursor_pointer()
-            .hover(move |s| s.bg(hover))
-            .child(label.into())
+    ) -> Button {
+        let b = Button::new(id).label(label);
+        match kind {
+            Btn::Normal => b,
+            Btn::Primary => b.primary(),
+            Btn::Ghost => b.ghost(),
+            Btn::Danger => b.danger(),
+        }
     }
 
     fn card(
@@ -353,10 +439,10 @@ impl AppView {
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .py(px(18.))
-            .px(px(20.))
-            .rounded(px(12.))
+            .gap(u(16.))
+            .py(u(18.))
+            .px(u(20.))
+            .rounded(u(12.))
             .bg(t.surface)
             .border_1()
             .border_color(t.border)
@@ -365,24 +451,24 @@ impl AppView {
                     .flex()
                     .items_start()
                     .justify_between()
-                    .gap(px(12.))
+                    .gap(u(12.))
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(3.))
+                            .gap(u(3.))
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(u(0.))
                             .child(
                                 div()
-                                    .text_size(px(15.))
+                                    .text_size(u(15.))
                                     .font_weight(FontWeight(650.))
                                     .child(title.into()),
                             )
                             .children(sub.map(|s| {
                                 div()
                                     .text_color(t.muted)
-                                    .text_size(px(12.5))
+                                    .text_size(u(12.5))
                                     .line_height(relative(1.45))
                                     .child(s)
                             })),
@@ -392,6 +478,7 @@ impl AppView {
             .child(body)
     }
 
+    /// A segmented choice (kit `ButtonGroup`): one selected option, shown on the option itself.
     /// `id` must be unique on the page: a name, or (name, row) inside lists.
     fn segmented<T: Copy + PartialEq + 'static>(
         &self,
@@ -400,37 +487,21 @@ impl AppView {
         value: Option<T>,
         on: impl Fn(&mut AppView, T, &mut Window, &mut Cx) + 'static,
         cx: &mut Cx,
-    ) -> Div {
-        let t = self.theme;
+    ) -> ButtonGroup {
         let id: ElementId = id.into();
-        let on = Rc::new(on);
-        div()
-            .flex()
-            .p(px(3.))
-            .gap(px(2.))
-            .rounded(px(10.))
-            .bg(t.surface)
-            .text_size(px(13.))
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(t.border)
+        let values: Vec<T> = options.iter().map(|(v, _)| *v).collect();
+        ButtonGroup::new(id.clone())
+            .outline()
+            .small()
             .children(options.into_iter().enumerate().map(|(i, (v, label))| {
-                let active = value == Some(v);
-                let on = on.clone();
-                div()
-                    .id(ElementId::NamedChild(std::sync::Arc::new(id.clone()), i.to_string().into()))
-                    .px(px(12.))
-                    .h(px(30.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(7.))
-                    .whitespace_nowrap()
-                    .cursor_pointer()
-                    .text_color(if active { t.text } else { t.text_2 })
-                    .when(active, |d| d.bg(t.surface_3))
-                    .when(!active, |d| d.hover(|s| s.text_color(t.text)))
-                    .on_click(cx.listener(move |this, _, w, cx| on(this, v, w, cx)))
-                    .child(label)
+                Button::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), i.to_string().into()))
+                    .label(label)
+                    .selected(value == Some(v))
+            }))
+            .on_click(cx.listener(move |this, clicked: &Vec<usize>, w, cx| {
+                if let Some(&v) = clicked.first().and_then(|&i| values.get(i)) {
+                    on(this, v, w, cx);
+                }
             }))
     }
 
@@ -441,31 +512,11 @@ impl AppView {
         disabled: bool,
         change: impl Fn(&mut AppView, bool, &mut Window, &mut Cx) + 'static,
         cx: &mut Cx,
-    ) -> Stateful<Div> {
-        let t = self.theme;
-        div()
-            .id(id)
-            .flex_none()
-            .w(px(40.))
-            .h(px(22.))
-            .border_1()
-            .border_color(if on { t.accent } else { t.border_strong })
-            .rounded_full()
-            .p(px(2.))
-            .flex()
-            .when(on, |d| d.justify_end())
-            .bg(if on { t.accent } else { t.surface_3 })
-            .when(disabled, |d| d.opacity(0.4))
-            .when(!disabled, |d| {
-                d.cursor_pointer()
-                    .on_click(cx.listener(move |this, _, w, cx| change(this, !on, w, cx)))
-            })
-            .child(
-                div()
-                    .size(px(16.))
-                    .rounded_full()
-                    .bg(if on { t.on_accent } else { t.text_2 }),
-            )
+    ) -> Switch {
+        Switch::new(id)
+            .checked(on)
+            .disabled(disabled)
+            .on_click(cx.listener(move |this, checked: &bool, w, cx| change(this, *checked, w, cx)))
     }
 
     /// Label, value readout, − / + buttons and a draggable track.
@@ -514,56 +565,51 @@ impl AppView {
                 "mixed".into()
             }
         });
-        let step_btn = |sign: f32, label: &'static str| {
-            div()
-                .id((if sign < 0.0 { "minus" } else { "plus" }, id as usize))
-                .size(px(22.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(5.))
-                .text_color(t.text_2)
-                .when(!disabled && value.is_some(), |b| {
-                    b.cursor_pointer()
-                        .hover(|s| s.bg(t.hover))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(v) = value {
-                                let next = ((v + sign * d.step) / d.step).round() * d.step;
-                                this.nudge(id, next.clamp(d.min, d.max), cx);
-                            }
-                        }))
-                })
-                .child(label)
+        // The − / + buttons are the keyboard path for every slider (Tab, then Space).
+        let step_btn = |sign: f32, name: &'static str| {
+            let label = if sign < 0.0 { "−" } else { "+" };
+            Button::new((if sign < 0.0 { "minus" } else { "plus" }, id as usize))
+                .ghost()
+                .xsmall()
+                .label(label)
+                .accessibility_label(name)
+                .disabled(disabled || value.is_none())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(v) = value {
+                        let next = ((v + sign * d.step) / d.step).round() * d.step;
+                        this.nudge(id, next.clamp(d.min, d.max), cx);
+                    }
+                }))
         };
         div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(u(8.))
             .when(disabled, |el| el.opacity(0.45))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(u(6.))
                     .child(div().flex_1().font_weight(FontWeight(550.)).child(label))
-                    .child(step_btn(-1.0, "−"))
+                    .child(step_btn(-1.0, "Decrease"))
                     .child(
                         // Click to type a value; Enter or clicking elsewhere applies it, Esc cancels.
                         div()
                             .id(("value", id as usize))
-                            .w(px(96.))
-                            .h(px(28.))
+                            .w(u(96.))
+                            .h(u(28.))
                             .flex()
                             .items_center()
                             .justify_end()
-                            .px(px(8.))
-                            .rounded(px(7.))
+                            .px(u(8.))
+                            .rounded(u(7.))
                             .bg(t.surface_2)
                             .border_1()
                             .border_color(if editing.is_some() { t.accent } else { t.border })
                             .font_family(NUM_FONT)
                             .font_weight(FontWeight::MEDIUM)
-                            .text_size(px(13.))
+                            .text_size(u(13.))
                             .when(!disabled, |el| {
                                 let start = value.map(|v| format!("{v:.decimals$}")).unwrap_or_default();
                                 el.cursor_text().on_mouse_down(
@@ -577,23 +623,23 @@ impl AppView {
                                 Some((typed, fresh)) => el
                                     .child(
                                         div()
-                                            .when(*fresh, |s| s.bg(t.accent_soft).rounded(px(3.)))
+                                            .when(*fresh, |s| s.bg(t.accent_soft).rounded(u(3.)))
                                             .child(typed.clone()),
                                     )
-                                    .child(div().ml(px(1.)).w(px(1.5)).h(px(15.)).bg(t.accent))
+                                    .child(div().ml(u(1.)).w(u(1.5)).h(u(15.)).bg(t.accent))
                                     .when(!unit.is_empty(), |el| {
-                                        el.child(div().ml(px(4.)).text_color(t.muted).child(unit))
+                                        el.child(div().ml(u(4.)).text_color(t.muted).child(unit))
                                     }),
                                 None => el.child(format!("{text} {unit}")),
                             }),
                     )
-                    .child(step_btn(1.0, "+")),
+                    .child(step_btn(1.0, "Increase")),
             )
             .child(
                 div()
                     .id(("track", id as usize))
                     .relative()
-                    .h(px(18.))
+                    .h(u(18.))
                     .flex()
                     .items_center()
                     .child(
@@ -609,7 +655,7 @@ impl AppView {
                     .child(
                         div()
                             .w_full()
-                            .h(px(6.))
+                            .h(u(6.))
                             .rounded_full()
                             .bg(t.track)
                             .child(div().h_full().w(relative(frac)).rounded_full().bg(fill)),
@@ -618,10 +664,10 @@ impl AppView {
                         div()
                             .absolute()
                             .left(relative(frac))
-                            .ml(px(-9.))
-                            .size(px(18.))
+                            .ml(u(-9.))
+                            .size(u(18.))
                             .rounded_full()
-                            .bg(gpui::white())
+                            .bg(t.slider_thumb)
                             .border_2()
                             .border_color(fill),
                     )
@@ -650,21 +696,18 @@ impl AppView {
         let text = active.map_or(value.to_string(), |e| e.text.clone());
         let empty = text.is_empty();
         let id = match field {
-            Field::Search => 0,
-            Field::MacroText => 1,
             Field::Repeat => 2,
-            Field::RuleExe => 3,
             Field::Delay(i) => 100 + i,
             Field::Slider(s) => 200 + s as usize,
         };
         div()
             .id(("field", id))
-            .w(px(width))
-            .h(px(32.))
-            .px(px(10.))
+            .w(u(width))
+            .h(u(32.))
+            .px(u(10.))
             .flex()
             .items_center()
-            .rounded(px(8.))
+            .rounded(u(8.))
             .bg(t.surface_2)
             .border_1()
             .border_color(if active.is_some() { t.accent } else { t.border })
@@ -678,7 +721,7 @@ impl AppView {
             .child(
                 div()
                     .text_color(if empty { t.muted } else { t.text })
-                    .text_size(px(13.))
+                    .text_size(u(13.))
                     .child(if empty && active.is_none() {
                         placeholder.to_string()
                     } else {
@@ -686,42 +729,38 @@ impl AppView {
                     }),
             )
             .when(active.is_some(), |el| {
-                el.child(div().ml(px(1.)).w(px(1.5)).h(px(16.)).bg(t.accent))
+                el.child(div().ml(u(1.)).w(u(1.5)).h(u(16.)).bg(t.accent))
             })
     }
 
     /// The app logo: a dark rounded tile with a bold M (same design as the exe icon).
     fn logo(&self, size: f32) -> Div {
+        let t = self.theme;
         div()
             .flex_none()
-            .size(px(size))
-            .rounded(px(size * 0.23))
+            .size(u(size))
+            .rounded(u(size * 0.23))
             .border_1()
-            .border_color(gpui::white().opacity(0.08))
+            .border_color(t.logo_border)
             .bg(linear_gradient(
                 180.,
-                linear_color_stop(rgb(0x2e2e2e), 0.),
-                linear_color_stop(rgb(0x0e0e0e), 1.),
+                linear_color_stop(t.logo_top, 0.),
+                linear_color_stop(t.logo_bottom, 1.),
             ))
             .flex()
             .items_center()
             .justify_center()
-            .child(
-                svg()
-                    .path("icons/logo.svg")
-                    .size(px(size * 0.86))
-                    .text_color(rgb(0xf4f4f4)),
-            )
+            .child(svg().path("icons/logo.svg").size(u(size * 0.86)).text_color(t.logo_mark))
     }
 
     fn banner(&self, text: impl Into<SharedString>, color: Hsla) -> Div {
         div()
-            .p(px(10.))
-            .rounded(px(8.))
+            .p(u(10.))
+            .rounded(u(8.))
             .border_1()
             .border_color(color.opacity(0.5))
             .text_color(color)
-            .text_size(px(13.))
+            .text_size(u(13.))
             .child(text.into())
     }
 
@@ -731,12 +770,8 @@ impl AppView {
         label: impl Into<SharedString>,
         kind: Btn,
         enabled: bool,
-    ) -> Stateful<Div> {
-        self.button(id, label, kind)
-            .h(px(28.))
-            .px(px(10.))
-            .text_size(px(12.))
-            .when(!enabled, |b| b.opacity(0.45).cursor_default())
+    ) -> Button {
+        self.button(id, label, kind).small().disabled(!enabled)
     }
 
     /// Key palette groups as clickable chips; `current` is highlighted.
@@ -752,7 +787,7 @@ impl AppView {
         let t = self.theme;
         let on_pick = Rc::new(on_pick);
         let query = self.features.search.to_lowercase();
-        div().flex().flex_col().gap(px(16.)).children(
+        div().flex().flex_col().gap(u(16.)).children(
             groups
                 .into_iter()
                 .map(|g| PaletteGroup {
@@ -769,38 +804,28 @@ impl AppView {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(8.))
+                        .gap(u(8.))
                         .child(
                             div()
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(u(12.))
+                                .font_weight(FontWeight::MEDIUM)
                                 .text_color(t.muted)
-                                .child(g.name.to_uppercase()),
+                                .child(g.name),
                         )
-                        .child(div().flex().flex_wrap().gap(px(5.)).children(
+                        .child(div().flex().flex_wrap().gap(u(5.)).children(
                             g.keys.into_iter().enumerate().map(|(ki, (label, action))| {
                                 let on = Some(action) == current || highlight.contains(&action);
                                 let on_pick = on_pick.clone();
-                                div()
-                                    .id((id, gi * 100 + ki))
-                                    .min_w(px(40.))
-                                    .h(px(32.))
-                                    .px(px(9.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(6.))
-                                    .border_1()
-                                    .border_color(if on { t.accent } else { t.border })
-                                    .bg(if on { t.accent } else { t.surface_2 })
-                                    .text_color(if on { t.on_accent } else { t.text })
-                                    .text_size(px(12.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.border_color(t.accent))
+                                Button::new((id, gi * 100 + ki))
+                                    .outline()
+                                    .small()
+                                    .min_w(u(40.))
+                                    .label(label)
+                                    .selected(on)
+                                    .when(on, |b| b.border_color(t.text_2))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         on_pick(this, action, cx)
                                     }))
-                                    .child(label)
                             }),
                         ))
                 }),
@@ -817,17 +842,17 @@ impl AppView {
         div()
             .flex()
             .items_center()
-            .gap(px(16.))
-            .py(px(4.))
+            .gap(u(16.))
+            .py(u(4.))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .min_w(px(0.))
-                    .gap(px(2.))
+                    .min_w(u(0.))
+                    .gap(u(2.))
                     .child(div().font_weight(FontWeight::MEDIUM).child(label))
-                    .child(div().text_color(t.muted).text_size(px(12.)).child(hint)),
+                    .child(div().text_color(t.muted).text_size(u(12.)).child(hint)),
             )
             .child(control)
     }
@@ -839,9 +864,9 @@ impl AppView {
             .w(px(self.kb_width.get()))
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .p(px(20.))
-            .rounded(px(12.))
+            .gap(u(16.))
+            .p(u(20.))
+            .rounded(u(12.))
             .bg(t.surface)
             .border_1()
             .border_color(t.border)
@@ -1014,33 +1039,6 @@ impl AppView {
             )
     }
 
-    fn toasts(&self) -> Div {
-        let t = self.theme;
-        div()
-            .absolute()
-            .bottom(px(16.))
-            .right(px(16.))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .children(self.toasts.iter().map(|toast| {
-                div()
-                    .max_w(px(420.))
-                    .px(px(14.))
-                    .py(px(10.))
-                    .rounded(px(8.))
-                    .bg(t.surface_2)
-                    .border_1()
-                    .border_color(if toast.error {
-                        t.danger.opacity(0.5)
-                    } else {
-                        t.border
-                    })
-                    .text_color(if toast.error { t.danger } else { t.text })
-                    .child(toast.text.clone())
-            }))
-    }
-
     // ---- shell ---------------------------------------------------------------------
 
     fn connect_screen(&mut self, cx: &mut Cx) -> Div {
@@ -1051,36 +1049,50 @@ impl AppView {
         } else {
             None
         };
+        let hint = if self.auto_connect {
+            "Plug in your MonsGeek or Akko Hall-effect keyboard with its USB cable and it connects by itself. Close the official driver first so the two apps don't fight over the device."
+        } else {
+            "Plug in your MonsGeek or Akko Hall-effect keyboard with its USB cable. Close the official driver first so the two apps don't fight over the device."
+        };
         div().size_full().flex().items_center().justify_center().child(
             div()
-                .w(px(420.))
+                .w(u(420.))
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(16.))
-                .p(px(32.))
-                .rounded(px(14.))
+                .gap(u(16.))
+                .p(u(32.))
+                .rounded(u(14.))
                 .bg(t.surface)
                 .border_1()
                 .border_color(t.border)
                 .child(self.logo(56.))
-                .child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).child(crate::APP_NAME))
-                .child(
-                    div()
-                        .text_color(t.muted)
-                        .text_center()
-                        .child("Plug in your MonsGeek or Akko Hall-effect keyboard with its USB cable. Close the official driver first so the two apps don't fight over the device."),
-                )
-                .children(error.map(|e| div().w_full().p(px(10.)).rounded(px(6.)).bg(t.danger_soft).text_color(t.danger).child(e)))
+                .child(div().text_size(u(20.)).font_weight(FontWeight::SEMIBOLD).child(crate::APP_NAME))
+                .child(div().text_color(t.muted).text_center().child(hint))
+                .children(error.map(|e| div().w_full().p(u(10.)).rounded(u(6.)).bg(t.danger_soft).text_color(t.danger).child(e)))
                 .child(
                     div()
                         .flex()
-                        .gap(px(8.))
+                        .gap(u(8.))
                         .child(
-                            self.button("connect", match self.status { Status::Disconnecting => "Disconnecting…", Status::Connecting => "Connecting…", _ => "Connect keyboard" }, Btn::Primary)
-                                .when(!connecting, |b| b.on_click(cx.listener(|this, _, _, cx| this.connect(false, cx)))),
+                            self.button(
+                                "connect",
+                                match self.status {
+                                    Status::Disconnecting => "Disconnecting…",
+                                    Status::Connecting => "Connecting…",
+                                    _ => "Connect keyboard",
+                                },
+                                Btn::Primary,
+                            )
+                            .loading(connecting)
+                            .disabled(connecting)
+                            .on_click(cx.listener(|this, _, _, cx| this.connect_by_user(false, cx))),
                         )
-                        .child(self.button("demo", "Try demo", Btn::Normal).when(!connecting, |b| b.on_click(cx.listener(|this, _, _, cx| this.connect(true, cx))))),
+                        .child(
+                            self.button("demo", "Try demo", Btn::Normal)
+                                .disabled(connecting)
+                                .on_click(cx.listener(|this, _, _, cx| this.connect_by_user(true, cx))),
+                        ),
                 ),
         )
     }
@@ -1088,20 +1100,31 @@ impl AppView {
     fn shell(&mut self, window: &mut Window, cx: &mut Cx) -> Div {
         self.sync_pickers(window, cx);
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let (title, sub) = self.page.title();
         let profile = d.profile;
         let name = d.name.clone();
         let busy = self.busy > 0;
+        let shortcuts: [&dyn Action; 7] = [
+            &GoPerformance,
+            &GoRemap,
+            &GoAdvanced,
+            &GoLighting,
+            &GoTester,
+            &GoAutoProfiles,
+            &GoSettings,
+        ];
         let sidebar = div()
-            .w(px(232.))
+            .w(u(232.))
             .flex_none()
             .h_full()
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .px(px(12.))
-            .py(px(16.))
+            .gap(u(4.))
+            .px(u(12.))
+            .py(u(16.))
             .bg(t.sidebar)
             .border_r_1()
             .border_color(t.border)
@@ -1109,54 +1132,42 @@ impl AppView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(6.))
-                    .pb(px(14.))
+                    .gap(u(10.))
+                    .px(u(6.))
+                    .pb(u(14.))
                     .child(self.logo(26.))
-                    .child(
-                        div()
-                            .text_size(px(15.))
-                            .font_weight(FontWeight::BOLD)
-                            .child(crate::APP_NAME),
-                    ),
+                    .child(div().text_size(u(15.)).font_weight(FontWeight::BOLD).child(crate::APP_NAME)),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(6.))
-                    .pt(px(4.))
-                    .pb(px(14.))
-                    .mb(px(6.))
+                    .gap(u(10.))
+                    .px(u(6.))
+                    .pt(u(4.))
+                    .pb(u(14.))
+                    .mb(u(6.))
                     .border_b_1()
                     .border_color(t.border)
                     .child(
                         div()
-                            .size(px(34.))
+                            .size(u(34.))
                             .flex_none()
-                            .rounded(px(8.))
+                            .rounded(u(8.))
                             .bg(t.surface_2)
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_color(t.text_2)
-                            .child(
-                                svg()
-                                    .path("icons/keyboard.svg")
-                                    .size(px(18.))
-                                    .text_color(t.text_2),
-                            ),
+                            .child(svg().path("icons/keyboard.svg").size(u(18.)).text_color(t.text_2)),
                     )
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .min_w(px(0.))
+                            .min_w(u(0.))
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(14.))
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .text_ellipsis()
@@ -1164,116 +1175,123 @@ impl AppView {
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.))
+                                    .text_size(u(12.))
                                     .text_color(if self.demo { t.warn } else { t.ok })
-                                    .child(if self.demo { "Demo mode" } else { "Connected" }),
+                                    .child(if self.demo { "Demo mode" } else { "Connected over USB" }),
                             ),
                     ),
             )
-            .child(
-                div()
-                    .pt(px(12.))
-                    .pb(px(6.))
-                    .px(px(10.))
-                    .text_size(px(11.))
-                    .text_color(t.muted)
-                    .child("CONFIGURE"),
-            )
-            .children(Page::ALL.iter().map(|&p| {
+            .children(Page::ALL.iter().zip(shortcuts).map(|(&p, shortcut)| {
                 let active = self.page == p;
-                div()
-                    .id(p.label())
-                    .px(px(12.))
-                    .h(px(40.))
-                    .gap(px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .flex()
-                    .items_center()
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .text_color(if active { t.text } else { t.text_2 })
-                    .when(active, |el| el.bg(t.accent_soft))
-                    .when(!active, |el| {
-                        el.hover(|s| s.bg(t.surface).text_color(t.text))
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_page(p, cx)))
-                    .child(
-                        svg()
-                            .path(match p {
-                                Page::Performance => "icons/gauge.svg",
-                                Page::Remap => "icons/remap.svg",
-                                Page::Advanced => "icons/bolt.svg",
-                                Page::Lighting => "icons/bulb.svg",
-                                Page::Tester => "icons/pulse.svg",
-                                Page::AutoProfiles => "icons/swap.svg",
-                                Page::Settings => "icons/settings.svg",
-                            })
-                            .size(px(18.))
-                            .text_color(if active { t.accent_strong } else { t.muted }),
+                Button::new(p.label())
+                    .ghost()
+                    .w_full()
+                    .icon(
+                        gpui::component::Icon::empty().path(match p {
+                            Page::Performance => "icons/gauge.svg",
+                            Page::Remap => "icons/remap.svg",
+                            Page::Advanced => "icons/bolt.svg",
+                            Page::Lighting => "icons/bulb.svg",
+                            Page::Tester => "icons/pulse.svg",
+                            Page::AutoProfiles => "icons/swap.svg",
+                            Page::Settings => "icons/settings.svg",
+                        }),
                     )
-                    .child(p.label())
+                    .label(p.label())
+                    // Button content is centred; the spacer keeps labels on one leading edge.
+                    .child(div().flex_1())
+                    .selected(active)
+                    .tooltip_with_action(p.label(), shortcut, Some(CONTEXT))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_page(p, cx)))
             }))
             .child(div().flex_1())
             .child(
-                self.button(
-                    "disconnect",
-                    if self.demo { "Exit demo" } else { "Disconnect" },
-                    Btn::Danger,
-                )
-                .w_full()
-                .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx))),
+                self.button("disconnect", if self.demo { "Exit demo" } else { "Disconnect" }, Btn::Normal)
+                    .w_full()
+                    .on_click(cx.listener(|this, _, _, cx| this.disconnect_by_user(cx))),
             );
 
+        let status = if self.closing {
+            "Finishing saves…"
+        } else if self.transitioning {
+            "Loading profile…"
+        } else if busy {
+            "Saving…"
+        } else {
+            ""
+        };
+        let (undo, redo) = (self.history.can_undo(), self.history.can_redo());
+        let history = div()
+            .flex()
+            .items_center()
+            .gap(u(4.))
+            .child(
+                Button::new("undo")
+                    .ghost()
+                    .small()
+                    .label("Undo")
+                    .disabled(undo.is_none() || self.transitioning)
+                    .tooltip_with_action(
+                        undo.map_or("Nothing to undo".to_string(), |l| format!("Undo {l}")),
+                        &Undo,
+                        Some(CONTEXT),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.undo(cx))),
+            )
+            .child(
+                Button::new("redo")
+                    .ghost()
+                    .small()
+                    .label("Redo")
+                    .disabled(redo.is_none() || self.transitioning)
+                    .tooltip_with_action(
+                        redo.map_or("Nothing to redo".to_string(), |l| format!("Redo {l}")),
+                        &Redo,
+                        Some(CONTEXT),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.redo(cx))),
+            );
+        // Narrow windows (or large interface sizes) stack the title above the controls.
+        let stacked = self.kb_width.get() / self.ui_scale < 900.0;
         let header = div()
             .flex()
             .items_center()
-            .when(self.kb_width.get() < 900.0, |d| d.flex_col().items_start())
-            .gap(px(16.))
-            .px(px(28.))
-            .pt(px(18.))
+            .when(stacked, |d| d.flex_col().items_start())
+            .gap(u(16.))
+            .px(u(28.))
+            .pt(u(18.))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .text_size(px(20.))
-                            .font_weight(FontWeight(650.))
-                            .child(title),
-                    )
-                    .child(div().text_size(px(13.)).text_color(t.muted).child(sub)),
-            )
-            .children(
-                (self.kb_width.get() >= 900.0 || busy || self.transitioning || self.closing).then(
-                    || {
-                        div()
-                            .w(px(100.))
-                            .text_color(t.muted)
-                            .text_size(px(12.))
-                            .child(if self.closing {
-                                "Finishing saves…"
-                            } else if self.transitioning {
-                                "Loading profile…"
-                            } else if busy {
-                                "Saving…"
-                            } else {
-                                ""
-                            })
-                    },
-                ),
+                    .min_w(u(0.))
+                    .gap(u(2.))
+                    .child(div().text_size(u(20.)).font_weight(FontWeight::SEMIBOLD).child(title))
+                    .child(div().text_size(u(13.)).text_color(t.muted).child(sub)),
             )
             .child(
-                self.segmented(
-                    "profile",
-                    (0..4)
-                        .map(|p| (p as u8, format!("Profile {}", p + 1)))
-                        .collect(),
-                    Some(profile),
-                    |this, p, _, cx| this.set_profile(p, cx),
-                    cx,
-                ),
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(u(12.))
+                    // A fixed lane, so the controls don't move as the status comes and goes.
+                    // Stacked, the controls start the row instead.
+                    .when(!stacked, |el| {
+                        el.child(div().w(u(110.)).text_right().text_color(t.muted).text_size(u(12.)).child(status))
+                    })
+                    .child(history)
+                    .when(stacked && !status.is_empty(), |el| {
+                        el.child(div().text_color(t.muted).text_size(u(12.)).child(status))
+                    })
+                    .child(self.segmented(
+                        "profile",
+                        (0..crate::app::PROFILES).map(|p| (p, short_name(&self.profile_name(p)))).collect(),
+                        Some(profile),
+                        |this, p, _, cx| this.set_profile(p, cx),
+                        cx,
+                    )),
             );
 
         let page = match self.page {
@@ -1288,7 +1306,7 @@ impl AppView {
         div().size_full().flex().child(sidebar).child(
             div()
                 .flex_1()
-                .min_w(px(0.))
+                .min_w(u(0.))
                 .h_full()
                 .flex()
                 .flex_col()
@@ -1300,9 +1318,9 @@ impl AppView {
                         .flex_1()
                         .overflow_y_scroll()
                         .track_scroll(&self.content_scroll.handle)
-                        .px(px(28.))
-                        .pt(px(16.))
-                        .pb(px(28.))
+                        .px(u(28.))
+                        .pt(u(16.))
+                        .pb(u(28.))
                         .child(smooth_scroll::layer(&self.content_scroll))
                         .child(page.w_full()),
                 ),
@@ -1313,7 +1331,9 @@ impl AppView {
 
     fn performance(&mut self, cx: &mut Cx) -> Div {
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let sel: Vec<KeyHe> = self
             .selection
             .iter()
@@ -1352,7 +1372,7 @@ impl AppView {
         let toolbar = div()
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(u(6.))
             .child(div().flex_1().text_color(t.muted).child(if count == 0 {
                 "Click or drag across keys to select them".to_string()
             } else {
@@ -1389,45 +1409,42 @@ impl AppView {
             div()
                 .flex()
                 .flex_wrap()
-                .gap(px(8.))
+                .gap(u(8.))
                 .children(
                     PRESETS
                         .iter()
                         .enumerate()
                         .map(|(i, &(name, desc, act, rt))| {
-                            div()
-                                .id(("preset", i))
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.))
-                                .px(px(12.))
-                                .py(px(9.))
-                                .min_w(px(140.))
-                                .rounded(px(8.))
-                                .bg(t.surface_2)
-                                .border_1()
-                                .border_color(t.border)
-                                .when(none, |el| el.opacity(0.45))
-                                .when(!none, |el| {
-                                    el.cursor_pointer()
-                                        .hover(|s| s.border_color(t.accent))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.update_keys(
-                                                move |k| {
-                                                    k.actuation = act;
-                                                    k.release = act;
-                                                    k.rapid_trigger = rt.is_some();
-                                                    if let Some(r) = rt {
-                                                        k.rt_press = r;
-                                                        k.rt_release = r;
-                                                    }
-                                                },
-                                                cx,
-                                            )
-                                        }))
-                                })
-                                .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
-                                .child(div().text_color(t.muted).text_size(px(12.)).child(desc))
+                            Button::new(("preset", i))
+                                .outline()
+                                .h_auto()
+                                .min_w(u(140.))
+                                .py(u(8.))
+                                .disabled(none)
+                                .accessibility_label(format!("{name} preset: {desc}"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.update_keys(
+                                        move |k| {
+                                            k.actuation = act;
+                                            k.release = act;
+                                            k.rapid_trigger = rt.is_some();
+                                            if let Some(r) = rt {
+                                                k.rt_press = r;
+                                                k.rt_release = r;
+                                            }
+                                        },
+                                        cx,
+                                    )
+                                }))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .items_start()
+                                        .gap(u(2.))
+                                        .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+                                        .child(div().text_color(t.muted).text_size(u(12.)).child(desc)),
+                                )
                         }),
                 );
 
@@ -1438,7 +1455,7 @@ impl AppView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(16.))
+                .gap(u(16.))
                 .child(self.slider("Actuation", actuation, SliderDrag { id: SliderId::Actuation, min, max, step }, "mm", none, cx))
                 // With Rapid Trigger on, the key resets as soon as it moves up, so the release point is never used.
                 .when(rt != Some(true), |el| el.child(self.slider("Release point", release, SliderDrag { id: SliderId::Release, min, max, step }, "mm", none, cx)))
@@ -1454,18 +1471,16 @@ impl AppView {
                 |this, v, _, cx| this.update_keys(move |k| k.rapid_trigger = v, cx),
                 cx,
             )
-            .when(rt == Some(true), |toggle| {
-                toggle.bg(t.rt).border_color(t.rt)
-            });
+            .color(t.rt);
         let rt_body = div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(u(16.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(u(10.))
                     .child(self.toggle(
                         "rt-link",
                         linked,
@@ -1557,29 +1572,29 @@ impl AppView {
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(u(16.))
             .child(self.keyboard_card(Some(toolbar.into_any_element()), board))
             .child(
                 div()
                     .flex()
-                    .gap(px(16.))
+                    .gap(u(16.))
                     .items_start()
                     .when(self.narrow(), |d| d.flex_col())
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(u(0.))
                             .when(self.narrow(), |d| d.w_full())
                             .child(act_card),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(u(0.))
                             .when(self.narrow(), |d| d.w_full())
                             .flex()
                             .flex_col()
-                            .gap(px(16.))
+                            .gap(u(16.))
                             .child(rt_card)
                             .child(dz_card),
                     ),
@@ -1588,7 +1603,9 @@ impl AppView {
 
     fn remap(&mut self, cx: &mut Cx) -> Div {
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let layer = self.remap_layer;
         let map = if layer == 0 {
             d.keymap.clone()
@@ -1617,7 +1634,9 @@ impl AppView {
                 self.ensure_macro_draft(i, cx);
             }
         }
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let fn_layers = d.def.fn_layer_count();
         let (fn_layer, active_fn) = (d.fn_layer, d.options.fn_index);
         let base_names = d.defaults.clone();
@@ -1655,7 +1674,7 @@ impl AppView {
         let mut controls = div()
             .flex()
             .items_center()
-            .gap(px(10.))
+            .gap(u(10.))
             .child(self.segmented(
                 "layer",
                 vec![(0u8, "Base layer".into()), (1u8, "Fn layer".into())],
@@ -1688,8 +1707,8 @@ impl AppView {
 
         let editor = match target {
             None => div()
-                .p(px(18.))
-                .rounded(px(10.))
+                .p(u(18.))
+                .rounded(u(10.))
                 .border_1()
                 .border_color(t.border)
                 .text_color(t.muted)
@@ -1702,7 +1721,7 @@ impl AppView {
                     .flex()
                     .flex_wrap()
                     .justify_end()
-                    .gap(px(6.))
+                    .gap(u(6.))
                     .child(self.segmented(
                         "remap-tab",
                         vec![(RemapTab::Key, "Key".into()), (RemapTab::Macro, "Macro".into())],
@@ -1716,35 +1735,23 @@ impl AppView {
                         },
                         cx,
                     ))
-                    .when(tab == RemapTab::Key, |el| {
-                        el.child(self.text_field(
-                            Field::Search,
-                            &self.features.search,
-                            "Search keys…",
-                            150.,
-                            cx,
-                        ))
-                    })
+                    .when(tab == RemapTab::Key, |el| el.children(self.search_input(150.)))
                     .child(
                         self.button("reset-key", "Reset to factory", Btn::Normal)
-                            .when(reset_disabled, |b| b.opacity(0.45))
-                            .when(!reset_disabled, |b| {
+                            .disabled(reset_disabled)
+                            .on_click({
                                 let def = defaults[index];
-                                b.on_click(cx.listener(move |this, _, _, cx| {
-                                    this.set_key_action(index, def, cx)
-                                }))
+                                cx.listener(move |this, _, _, cx| this.set_key_action(index, def, cx))
                             }),
                     )
                     .when(layer == 1, |el| {
                         let empty = current == [0, 0, 0, 0];
                         el.child(
                             self.button("clear-fn", "Clear", Btn::Ghost)
-                                .when(empty, |b| b.opacity(0.45))
-                                .when(!empty, |b| {
-                                    b.on_click(cx.listener(move |this, _, _, cx| {
-                                        this.set_key_action(index, [0, 0, 0, 0], cx)
-                                    }))
-                                }),
+                                .disabled(empty)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_key_action(index, [0, 0, 0, 0], cx)
+                                })),
                         )
                     });
                 let body = if tab == RemapTab::Macro {
@@ -1787,10 +1794,10 @@ impl AppView {
         let mut page = div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(u(16.))
             .child(self.keyboard_card(Some(controls.into_any_element()), board))
             .when(layer == 1 && fn_layer != active_fn, |el| {
-                el.child(div().p(px(10.)).rounded(px(8.)).border_1().border_color(t.warn.opacity(0.5)).text_color(t.warn).child(format!(
+                el.child(div().p(u(10.)).rounded(u(8.)).border_1().border_color(t.warn.opacity(0.5)).text_color(t.warn).child(format!(
                     "You're editing Fn layer {}, but the keyboard is using Fn layer {}. Press Fn + Right Alt to switch.",
                     fn_layer + 1,
                     active_fn + 1
@@ -1801,28 +1808,22 @@ impl AppView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
+                    .gap(u(4.))
                     .children(shortcuts.iter().map(|&(i, a)| {
-                        div()
-                            .id(("short", i))
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .px(px(10.))
-                            .py(px(6.))
-                            .rounded(px(6.))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(t.hover))
-                            .when(target == Some(i), |el| el.bg(t.hover))
+                        Button::new(("short", i))
+                            .ghost()
+                            .w_full()
+                            .gap(u(12.))
+                            .selected(target == Some(i))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.selection = vec![i];
                                 cx.notify();
                             }))
                             .child(
                                 div()
-                                    .w(px(110.))
+                                    .w(u(110.))
                                     .font_family(NUM_FONT)
-                                    .text_size(px(12.))
+                                    .text_size(u(12.))
                                     .child(format!("Fn + {}", action_label(&base_names[i]))),
                             )
                             .child(
@@ -1832,25 +1833,25 @@ impl AppView {
                                     .child(action_description(&a)),
                             )
                             .children((a != defaults[i]).then(|| {
-                                div().text_size(px(10.)).text_color(t.accent).child("MOD")
+                                div().text_size(u(11.)).text_color(t.muted).child("Changed")
                             }))
                     }));
             page = page.child(
                 div()
                     .flex()
-                    .gap(px(16.))
+                    .gap(u(16.))
                     .items_start()
                     .when(self.narrow(), |d| d.flex_col())
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(u(0.))
                             .when(self.narrow(), |d| d.w_full())
                             .child(editor),
                     )
                     .child(
                         div()
-                            .w(px(360.))
+                            .w(u(360.))
                             .when(self.narrow(), |d| d.w_full())
                             .flex_none()
                             .child(self.card(
@@ -1889,7 +1890,9 @@ impl AppView {
         let tabs = self.lighting_tabs(cx);
         self.tick_light_preview(cx);
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let l = d.lighting;
         let effect = EFFECTS.iter().find(|e| e.id == l.effect);
         let picture = l.effect == crate::protocol::userpic::USER_PICTURE_EFFECT;
@@ -1964,33 +1967,26 @@ impl AppView {
             div()
                 .flex()
                 .flex_wrap()
-                .gap(px(6.))
+                .gap(u(6.))
                 .children(EFFECTS.iter().map(|e| {
                     let active = e.id == l.effect;
                     let id = e.id;
-                    div()
-                        .id(("fx", e.id as usize))
-                        .w(px(138.))
-                        .h(px(34.))
-                        .px(px(10.))
-                        .flex()
-                        .items_center()
-                        .rounded(px(7.))
-                        .border_1()
-                        .border_color(if active { t.accent } else { t.border })
-                        .bg(if active { t.accent_soft } else { t.surface_2 })
-                        .cursor_pointer()
-                        .hover(|s| s.border_color(t.accent))
+                    Button::new(("fx", e.id as usize))
+                        .outline()
+                        .w(u(138.))
+                        .label(e.name)
+                        .child(div().flex_1())
+                        .selected(active)
+                        .when(active, |b| b.border_color(t.text_2))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.edit_lighting(|l| l.effect = id, cx)
                         }))
-                        .child(e.name)
                 }));
 
         let settings = div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(u(16.))
             .child(self.slider(
                 "Brightness",
                 Some(l.brightness as f32),
@@ -2036,27 +2032,28 @@ impl AppView {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(8.))
+                            .gap(u(8.))
                             .child(div().font_weight(FontWeight::MEDIUM).child("Colour"))
-                            .child(div().flex().flex_wrap().items_center().gap(px(8.)).children(SWATCHES.iter().map(
+                            .child(div().flex().flex_wrap().items_center().gap(u(8.)).children(SWATCHES.iter().map(
                                 |&hex| {
                                     let rgb3 = [(hex >> 16) as u8, (hex >> 8) as u8, hex as u8];
                                     let active = l.color == rgb3;
-                                    div()
-                                        .id(("sw", hex as usize))
-                                        .size(px(26.))
-                                        .rounded(px(7.))
-                                        .bg(rgb(hex))
-                                        .border_2()
-                                        .border_color(if active {
-                                            t.text
-                                        } else {
-                                            t.border_strong
-                                        })
-                                        .cursor_pointer()
+                                    Button::new(("sw", hex as usize))
+                                        .ghost()
+                                        .compact()
+                                        .selected(active)
+                                        .accessibility_label(format!("Colour #{hex:06X}"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.edit_lighting(|l| l.color = rgb3, cx)
                                         }))
+                                        .child(
+                                            div()
+                                                .size(u(22.))
+                                                .rounded(u(6.))
+                                                .bg(rgb(hex))
+                                                .border_2()
+                                                .border_color(if active { t.text } else { t.border_strong }),
+                                        )
                                         .into_any_element()
                                 },
                             ))
@@ -2070,7 +2067,7 @@ impl AppView {
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(u(16.))
             .children(tabs)
             .child(self.keyboard_card(None, board))
             .when(picture, |el| {
@@ -2085,13 +2082,13 @@ impl AppView {
             .child(
                 div()
                     .flex()
-                    .gap(px(16.))
+                    .gap(u(16.))
                     .items_start()
                     .when(self.narrow(), |d| d.flex_col())
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(u(0.))
                             .when(self.narrow(), |d| d.w_full())
                             .child(self.card(
                                 "Effect",
@@ -2102,7 +2099,7 @@ impl AppView {
                     )
                     .child(
                         div()
-                            .w(px(340.))
+                            .w(u(340.))
                             .when(self.narrow(), |d| d.w_full())
                             .flex_none()
                             .child(self.card(
@@ -2117,31 +2114,32 @@ impl AppView {
     }
 
     fn settings(&mut self, window: &mut Window, cx: &mut Cx) -> Div {
-        let _ = window;
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let fw = d.info.firmware;
         let o = d.options;
         let info_row = |label: &'static str, v: String| {
             div()
                 .flex()
                 .justify_between()
-                .py(px(5.))
+                .py(u(5.))
                 .child(div().text_color(t.muted).child(label))
-                .child(div().font_family(NUM_FONT).text_size(px(12.5)).child(v))
+                .child(div().font_family(NUM_FONT).text_size(u(12.5)).child(v))
         };
         let rate = d.report_rate;
         let polling = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(u(8.))
             .child(div().font_weight(FontWeight::MEDIUM).child("Polling rate"))
             .map(|el| match rate {
                 Some(hz) => el
                     .child(
                         div()
                             .text_color(t.muted)
-                            .text_size(px(12.))
+                            .text_size(u(12.))
                             .child("How often the keyboard reports to the PC. 8K needs a fast USB port and CPU."),
                     )
                     .child(div().flex().child(self.segmented(
@@ -2156,7 +2154,7 @@ impl AppView {
                         |this, v, _, cx| this.set_report_rate(v, cx),
                         cx,
                     ))),
-                None => el.child(div().text_color(t.muted).text_size(px(12.)).child(format!(
+                None => el.child(div().text_color(t.muted).text_size(u(12.)).child(format!(
                     "Fixed by the firmware. v{}.{:02x} ignores polling-rate changes; the official driver only offers a choice from firmware 4.00.",
                     fw >> 8,
                     fw & 0xff
@@ -2169,7 +2167,7 @@ impl AppView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(16.))
+                .gap(u(16.))
                 .child(polling)
                 .child(self.switch_type_row(cx))
                 .child(self.slider(
@@ -2185,19 +2183,28 @@ impl AppView {
                     false,
                     cx,
                 ))
-                .child(self.slider(
-                    "Rapid Trigger stability",
-                    Some(o.rt_stability as f32),
-                    SliderDrag {
-                        id: SliderId::Stability,
-                        min: 0.0,
-                        max: 125.0,
-                        step: 25.0,
-                    },
-                    "",
-                    false,
-                    cx,
-                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(u(4.))
+                        .child(self.slider(
+                            "Rapid Trigger stability",
+                            Some(o.rt_stability as f32),
+                            SliderDrag {
+                                id: SliderId::Stability,
+                                min: 0.0,
+                                max: 125.0,
+                                step: 25.0,
+                            },
+                            "",
+                            false,
+                            cx,
+                        ))
+                        .child(div().text_color(t.muted).text_size(u(12.)).child(
+                            "The firmware's filter against Rapid Trigger chatter: 0 is off, each step of 25 ignores a little more jitter at the cost of some sensitivity.",
+                        )),
+                )
                 .child(self.setting_row(
                     "Swap WASD and arrows",
                     "For games that only support arrow keys.",
@@ -2254,53 +2261,44 @@ impl AppView {
                     },
                 )),
         );
-        let confirming = self.confirm_reset;
         let reset = self.card(
             "Factory reset",
-            Some("Restores every profile, keymap, lighting and actuation setting to factory defaults. This can't be undone."),
+            Some("Restores every profile, keymap, lighting and actuation setting to factory defaults. This can't be undone; back up first if you might want them again."),
             None,
-            if confirming {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(div().flex_1().text_color(t.danger).child("Reset all four profiles?"))
-                    .child(self.button("reset-cancel", "Cancel", Btn::Normal).on_click(cx.listener(|this, _, _, cx| {
-                        this.confirm_reset = false;
-                        cx.notify();
-                    })))
-                    .child(self.button("reset-go", "Reset keyboard", Btn::Danger).on_click(cx.listener(|this, _, _, cx| this.factory_reset(cx))))
-            } else {
-                div().child(self.button("reset", "Factory reset…", Btn::Danger).on_click(cx.listener(|this, _, _, cx| {
-                    this.confirm_reset = true;
-                    cx.notify();
-                })))
-            },
+            div().child(
+                self.button("reset", "Factory reset…", Btn::Danger)
+                    .disabled(self.transitioning)
+                    .on_click(cx.listener(|this, _, window, cx| this.confirm_factory_reset(window, cx))),
+            ),
         );
+        let profiles = self.profiles_card(cx);
+        let app = self.app_card(window, cx);
         div()
             .flex()
-            .gap(px(16.))
+            .gap(u(16.))
             .items_start()
             .when(self.narrow(), |d| d.flex_col())
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(0.))
+                    .min_w(u(0.))
                     .when(self.narrow(), |d| d.w_full())
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
-                    .child(keyboard),
+                    .gap(u(16.))
+                    .child(keyboard)
+                    .child(profiles),
             )
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(0.))
+                    .min_w(u(0.))
                     .when(self.narrow(), |d| d.w_full())
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
+                    .gap(u(16.))
                     .child(device)
+                    .child(app)
                     .child(self.backup_card(cx))
                     .child(reset),
             )
@@ -2308,6 +2306,16 @@ impl AppView {
 }
 
 /// Blends `b` over `a` by `t` (0..1), in RGB.
+/// A profile name short enough for the header's segmented control.
+fn short_name(name: &str) -> String {
+    const MAX: usize = 14;
+    if name.chars().count() <= MAX {
+        name.to_string()
+    } else {
+        name.chars().take(MAX - 1).collect::<String>() + "…"
+    }
+}
+
 fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
     let (a, b, t) = (Rgba::from(a), Rgba::from(b), t.clamp(0.0, 1.0));
     Rgba {
@@ -2339,14 +2347,14 @@ impl AppView {
         div()
             .flex()
             .items_center()
-            .h(px(32.))
-            .pl(px(4.))
-            .pr(px(10.))
-            .rounded(px(8.))
+            .h(u(32.))
+            .pl(u(4.))
+            .pr(u(10.))
+            .rounded(u(8.))
             .bg(t.surface_2)
             .border_1()
             .border_color(t.border_strong)
-            .text_size(px(12.5))
+            .text_size(u(12.5))
             .child(
                 ColorPicker::new(state)
                     .featured_colors(featured)
@@ -2354,5 +2362,235 @@ impl AppView {
                     .label(hex),
             )
             .into_any_element()
+    }
+}
+
+// ---- settings: app, profiles, confirmations ---------------------------------------------------
+
+impl AppView {
+    /// The key search box (kit input), shared by Remap and Advanced.
+    fn search_input(&self, width: f32) -> Option<AnyElement> {
+        let p = self.pickers.as_ref()?;
+        Some(
+            div()
+                .w(u(width))
+                .child(gpui::component::input::Input::new(&p.search).small().cleanable(true))
+                .into_any_element(),
+        )
+    }
+
+    /// Opening at sign-in, the tray, appearance and interface size.
+    fn app_card(&mut self, _window: &mut Window, cx: &mut Cx) -> Div {
+        use crate::config::{Appearance, UI_SIZES};
+        let t = self.theme;
+        let at_login = self.tools.launch_at_login;
+        let in_tray = self.config.start_in_tray;
+        let size = self.config.font_size();
+        self.card(
+            "App",
+            None,
+            None,
+            div()
+                .flex()
+                .flex_col()
+                .gap(u(16.))
+                .child(self.setting_row(
+                    "Open at sign-in",
+                    "Start Monsgeek App when you sign in to Windows, so automatic profiles and per-layer lighting keep working.",
+                    self.toggle(
+                        "at-login",
+                        at_login,
+                        false,
+                        |this, v, _, cx| this.set_launch_at_login(v, cx),
+                        cx,
+                    ),
+                ))
+                .child(self.setting_row(
+                    "Start in the tray",
+                    "Open hidden, with an icon in the notification area. Closing the window also hides it there.",
+                    self.toggle(
+                        "in-tray",
+                        in_tray,
+                        false,
+                        |this, v, _, cx| {
+                            this.config.start_in_tray = v;
+                            this.save_config(cx);
+                            this.sync_auto(cx);
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(u(8.))
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Appearance"))
+                        .child(div().flex().child(self.segmented(
+                            "appearance",
+                            vec![
+                                (Appearance::System, "System".into()),
+                                (Appearance::Light, "Light".into()),
+                                (Appearance::Dark, "Dark".into()),
+                            ],
+                            Some(self.config.appearance),
+                            |this, a, w, cx| this.set_appearance(a, w, cx),
+                            cx,
+                        ))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(u(8.))
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Interface size"))
+                        .child(div().text_color(t.muted).text_size(u(12.)).child("Ctrl + and Ctrl − also change it; Ctrl 0 resets."))
+                        .child(div().flex().child(self.segmented(
+                            "ui-size",
+                            UI_SIZES
+                                .iter()
+                                .zip(["Small", "Default", "Large", "Larger"])
+                                .map(|(&s, name)| (s as u32, name.to_string()))
+                                .collect(),
+                            Some(size as u32),
+                            |this, s, w, cx| this.set_ui_size(s as f32, w, cx),
+                            cx,
+                        ))),
+                ),
+        )
+    }
+
+    /// Names, copy, export and import for the four onboard profiles.
+    fn profiles_card(&self, cx: &mut Cx) -> Div {
+        let t = self.theme;
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
+        let active = d.profile;
+        let busy = self.transitioning;
+        let rows = (0..crate::app::PROFILES).map(|p| {
+            let name_input = self.pickers.as_ref().map(|k| {
+                gpui::component::input::Input::new(&k.profile_names[p as usize])
+                    .small()
+                    .aria_label(format!("Name of profile {}", p + 1))
+            });
+            let names: Vec<(u8, String)> = (0..crate::app::PROFILES)
+                .filter(|&q| q != p)
+                .map(|q| (q, self.profile_name(q)))
+                .collect();
+            let view = cx.entity().downgrade();
+            let from_name = self.profile_name(p);
+            div()
+                .flex()
+                .items_center()
+                .gap(u(8.))
+                .child(
+                    div()
+                        .w(u(20.))
+                        .flex_none()
+                        .font_family(NUM_FONT)
+                        .text_color(if p == active { t.text } else { t.muted })
+                        .child(format!("{}", p + 1)),
+                )
+                .child(div().flex_1().min_w(u(0.)).children(name_input))
+                .child(
+                    Button::new(("copy-profile", p as usize))
+                        .small()
+                        .label("Copy to…")
+                        .dropdown_caret(true)
+                        .disabled(busy)
+                        .dropdown_menu(move |menu, _, _| {
+                            names.iter().fold(menu, |menu, (q, name)| {
+                                let (view, q, from_name, name) = (view.clone(), *q, from_name.clone(), name.clone());
+                                menu.item(gpui::component::menu::PopupMenuItem::new(name.clone()).on_click(
+                                    move |_, window, cx| {
+                                        let view = view.clone();
+                                        let (from_name, name) = (from_name.clone(), name.clone());
+                                        window.open_alert_dialog(cx, move |dialog, _, _| {
+                                            let view = view.clone();
+                                            dialog
+                                                .confirm()
+                                                .title(format!("Replace {name} with a copy of {from_name}?"))
+                                                .description(format!(
+                                                    "{name}'s keymap, key settings and lighting are overwritten. Back up first if you might want them again."
+                                                ))
+                                                .ok_text("Replace").ok_variant(gpui::component::button::ButtonVariant::Danger)
+                                                .on_ok(move |_, _, cx| {
+                                                    view.update(cx, |this, cx| this.copy_profile(p, q, cx)).ok();
+                                                    true
+                                                })
+                                        });
+                                    },
+                                ))
+                            })
+                        }),
+                )
+                .child(
+                    Button::new(("export-profile", p as usize))
+                        .small()
+                        .label("Export…")
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| this.export_profile(p, cx))),
+                )
+                .child(
+                    Button::new(("import-profile", p as usize))
+                        .small()
+                        .label("Import…")
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| this.pick_profile_file(p, cx))),
+                )
+        });
+        self.card(
+            "Profiles",
+            Some("Names are kept in this app. Copy, export and import move a profile's keymap, key settings and lighting. Macros and Fn layers are shared by all profiles, so they stay as they are."),
+            None,
+            div().flex().flex_col().gap(u(8.)).children(rows),
+        )
+    }
+
+    fn set_launch_at_login(&mut self, on: bool, cx: &mut Cx) {
+        match crate::win::set_launch_at_login(on) {
+            Ok(()) => self.tools.launch_at_login = on,
+            Err(e) => self.toast(format!("Couldn't change the sign-in setting: {e}"), true, cx),
+        }
+        cx.notify();
+    }
+
+    fn confirm_factory_reset(&mut self, window: &mut Window, cx: &mut Cx) {
+        let view = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let view = view.clone();
+            dialog
+                .confirm()
+                .title("Reset the keyboard to factory settings?")
+                .description("All four profiles, keymaps, Fn layers, macros, lighting and actuation settings go back to their defaults. This can't be undone.")
+                .ok_text("Reset keyboard").ok_variant(gpui::component::button::ButtonVariant::Danger)
+                .on_ok(move |_, _, cx| {
+                    view.update(cx, |this, cx| this.factory_reset(cx)).ok();
+                    true
+                })
+        });
+    }
+
+    fn confirm_import(&mut self, profile: u8, file: crate::backup::ProfileFile, window: &mut Window, cx: &mut Cx) {
+        let view = cx.entity().downgrade();
+        let target = self.profile_name(profile);
+        let file = std::rc::Rc::new(file);
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let (view, file) = (view.clone(), file.clone());
+            dialog
+                .confirm()
+                .title(format!("Replace {target} with {}?", file.name))
+                .description(format!(
+                    "{target}'s keymap, key settings and lighting are overwritten with the ones in the file. Back up first if you might want them again."
+                ))
+                .ok_text("Replace").ok_variant(gpui::component::button::ButtonVariant::Danger)
+                .on_ok(move |_, _, cx| {
+                    let file = (*file).clone();
+                    view.update(cx, |this, cx| this.import_profile(profile, file, cx)).ok();
+                    true
+                })
+        });
     }
 }

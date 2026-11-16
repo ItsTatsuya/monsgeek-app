@@ -16,12 +16,15 @@ are embedded. Close the
 official driver before connecting, so the two apps don't send commands at the same time.
 
 ```powershell
-monsgeek-app.exe            # connection screen; plug in over USB and click Connect keyboard
+monsgeek-app.exe            # connects as soon as the keyboard is plugged in over USB
 monsgeek-app.exe --demo     # a simulated FUN60 PRO, to try the UI without a keyboard
+monsgeek-app.exe --tray     # start hidden in the tray (what "Open at sign-in" uses)
 ```
 
 Changes write to the keyboard immediately; moving a slider batches the writes until you
-release it or pause. Demo mode uses an in-memory keyboard and never opens a HID device.
+release it or pause. If a write fails, the page goes back to what the keyboard holds. Unplugging
+the keyboard drops the connection, and plugging it back in reconnects. Demo mode uses an
+in-memory keyboard and never opens a HID device.
 
 ## Features
 
@@ -40,6 +43,8 @@ release it or pause. Demo mode uses an in-memory keyboard and never opens a HID 
   respond to your typing). Pick any colour: presets, or a colour picker with a palette,
   HSLA sliders and a hex box. Per-key colours paint the model's user pictures with the same
   picker as the brush.
+- **Backups** include the extra actions of dynamic-keystroke and mod-tap keys; backups made by
+  earlier versions still restore (those actions are then left as they are).
 - **Lighting per profile and Fn layer:** when the keyboard switches profile or layer, the app
   writes the matching look (while the app runs).
 - **Tester:** live analog travel at 60 fps with per-key peaks, a Rapid Trigger prediction and
@@ -48,12 +53,23 @@ release it or pause. Demo mode uses an in-memory keyboard and never opens a HID 
 - **Automatic profiles:** map an app's exe name to a profile. Closing the window can hide the
   app to the tray so switching keeps working.
 - **Settings:** polling rate (firmware 4.00+), switch type, debounce, RT stability, WASD/arrow
-  swap, accidental-press guard, device info, factory reset, optional background blur, and
-  whole-keyboard backup & restore to JSON.
+  swap, accidental-press guard, device info, factory reset, and whole-keyboard backup & restore
+  to JSON.
 - **4 onboard profiles**, switched from the header; changes made on the keyboard itself are
-  read back from its notifications.
+  read back from its notifications. Name them, copy one onto another, or export and import a
+  single profile (keymap, key settings and lighting) as a file.
+- **Undo and redo** for key settings, remaps and lighting (Ctrl+Z, Ctrl+Y, or the header
+  buttons).
+- **App:** open at sign-in, start in the tray, light/dark/system appearance and four interface
+  sizes (Ctrl + / Ctrl − / Ctrl 0).
+- **Keyboard shortcuts:** Ctrl+1…7 for the pages, Alt+1…4 for the profiles, Ctrl+A to select
+  all keys, Esc to clear the selection. Buttons, switches, menus and text fields are reachable
+  with Tab, and every slider has − / + buttons; picking keys on the keyboard map and dragging a
+  slider still need the mouse.
 
-Settings, rules and looks are saved to `%APPDATA%/Monsgeek App/config.json`.
+Settings, rules, looks and profile names are saved to `%APPDATA%/Monsgeek App/config.json`. If
+that file can't be read, it is moved to `config.json.bad` (so nothing overwrites it) and the app
+says so.
 
 ## Build
 

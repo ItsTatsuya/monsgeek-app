@@ -80,12 +80,10 @@ pub struct MacroDraft {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// The numeric boxes typed into directly (text goes through kit inputs).
 pub enum Field {
-    Search,
-    MacroText,
     Repeat,
     Delay(usize),
-    RuleExe,
     /// A slider's value box (actuation, RT, brightness, debounce…).
     Slider(SliderId),
 }
@@ -150,7 +148,8 @@ pub struct Features {
     pub perkey: Option<PerKey>,
     pub cal: Calibration,
     pub backup: BackupState,
-    pub switch_menu: bool,
+    /// A profile file the user picked, waiting for the "replace profile" confirmation.
+    pub pending_import: Option<(u8, crate::backup::ProfileFile)>,
 }
 
 impl Default for Features {
@@ -172,7 +171,7 @@ impl Default for Features {
                 gen: 0,
             },
             backup: BackupState::default(),
-            switch_menu: false,
+            pending_import: None,
         }
     }
 }
@@ -258,7 +257,13 @@ impl AppView {
             return;
         };
         d.report_rate = Some(hz);
-        self.run(cx, "Setting polling rate", move |kb| kb.set_report_rate(hz), |_, _, _| {});
+        self.run_reverting(
+            cx,
+            "Setting polling rate",
+            move |kb| kb.set_report_rate(hz),
+            |_, _, _| {},
+            |s, cx| s.reread_settings(cx),
+        );
     }
 
     pub fn set_switch_type(&mut self, t: u8, cx: &mut Context<Self>) {
@@ -266,7 +271,6 @@ impl AppView {
             return;
         };
         let all: Vec<usize> = d.layout.keys.iter().map(|k| k.index).collect();
-        self.features.switch_menu = false;
         self.update_indices(all, move |k| k.switch_type = t, cx);
     }
 
@@ -510,6 +514,7 @@ impl AppView {
         d.keymap[index] = base;
         d.keys[index].mode = m;
         d.committed[index].mode = m;
+        self.history.forget_keys();
     }
 
     // ---- macros -------------------------------------------------------------------------
@@ -763,9 +768,6 @@ impl AppView {
         }
         self.commit_edit(cx);
         let text = match field {
-            Field::Search => self.features.search.clone(),
-            Field::RuleExe => self.tools.rule_text.clone(),
-            Field::MacroText => self.features.macro_text.clone(),
             Field::Repeat => self
                 .features
                 .macro_draft
@@ -800,7 +802,6 @@ impl AppView {
             return;
         };
         match e.field {
-            Field::Search | Field::MacroText | Field::RuleExe => {}
             Field::Slider(id) => {
                 let typed = e.text.trim().replace(',', ".").parse::<f32>();
                 if let (Some(d), Ok(v)) = (e.range, typed) {
@@ -836,23 +837,26 @@ impl AppView {
         let numeric = matches!(e.field, Field::Repeat | Field::Delay(_));
         let decimal = matches!(e.field, Field::Slider(_));
         match k.key.as_str() {
-            "enter" => {
-                let field = e.field;
-                if field == Field::MacroText {
-                    self.add_macro_text(cx);
-                } else if field == Field::RuleExe {
-                    let text = self.tools.rule_text.clone();
-                    self.add_rule(&text, cx);
-                } else {
-                    self.commit_edit(cx);
-                }
-            }
+            "enter" => self.commit_edit(cx),
             "escape" => self.features.edit = None,
             "backspace" => {
                 if std::mem::take(&mut e.fresh) {
                     e.text.clear();
                 }
                 e.text.pop();
+            }
+            "v" if k.modifiers.control && !k.modifiers.alt => {
+                // Paste, keeping only what the box accepts.
+                let pasted = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+                let keep: String = pasted
+                    .trim()
+                    .chars()
+                    .filter(|c| c.is_ascii_digit() || (decimal && (*c == '.' || *c == ',')))
+                    .collect();
+                if std::mem::take(&mut e.fresh) {
+                    e.text.clear();
+                }
+                e.text.push_str(&keep);
             }
             _ => {
                 if k.modifiers.control || k.modifiers.alt || k.modifiers.platform {
@@ -874,15 +878,7 @@ impl AppView {
                 e.text.push_str(ch);
             }
         }
-        // Search and macro text are live; numbers commit on Enter or when another control is clicked.
-        if let Some(e) = self.features.edit.as_ref() {
-            match e.field {
-                Field::Search => self.features.search = e.text.clone(),
-                Field::MacroText => self.features.macro_text = e.text.clone(),
-                Field::RuleExe => self.tools.rule_text = e.text.clone(),
-                _ => {}
-            }
-        }
+        // Numbers commit on Enter or when another control is clicked.
         cx.notify();
         true
     }
@@ -1155,6 +1151,7 @@ impl AppView {
                         d.committed = keys.clone();
                         d.keys = keys;
                     }
+                    s.history.clear();
                     s.toast("Calibration saved", false, cx);
                 }
                 Err(e) => {
@@ -1238,7 +1235,27 @@ impl AppView {
             .map(|d| (d.def.display_name.clone(), d.def.fn_layer_count().max(1)))
     }
 
+    /// Asks where to save first (so cancelling costs nothing), then reads the whole keyboard
+    /// and writes the file.
     pub fn back_up(&mut self, cx: &mut Context<Self>) {
+        let Some((name, _)) = self.backup_meta() else {
+            return;
+        };
+        if self.transitioning || self.features.backup.busy.is_some() {
+            return;
+        }
+        let dir = super::profiles::documents_dir();
+        let rx = cx.prompt_for_new_path(&dir, Some(&backup::file_name_for(&name)));
+        cx.spawn(async move |this, cx| {
+            let Some(path) = rx.await.ok().and_then(|p| p.ok()).flatten() else {
+                return;
+            };
+            this.update(cx, |s, cx| s.back_up_to(path, cx)).ok();
+        })
+        .detach();
+    }
+
+    fn back_up_to(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         let Some((name, fn_layers)) = self.backup_meta() else {
             return;
         };
@@ -1248,44 +1265,31 @@ impl AppView {
         self.end_drag(cx);
         self.flush_keys(cx);
         self.flush_lighting(cx);
+        let Some(client) = self.device.as_ref().map(|d| d.client.clone()) else {
+            return;
+        };
         let cell = self.progress_cell(cx);
         let report = cell.clone();
         self.transitioning = true;
-        let result = self.device.as_ref().unwrap().client.submit(move |kb| {
+        let result = client.submit(move |kb| {
             backup::read(kb, &name, fn_layers, &mut |d, t, l| {
-                *report.lock().unwrap() = (d, t, format!("Reading · {l}"));
+                *crate::protocol::hid::lock(&report) = (d, t, format!("Reading · {l}"));
             })
         });
         let connection = self.connection_gen;
         cx.spawn(async move |this, cx| {
             let r = result.recv().await.unwrap_or_else(|_| Err(anyhow!("Keyboard connection closed")));
-            let path = match &r {
-                Ok(b) => {
-                    let dir = std::env::var_os("USERPROFILE")
-                        .map(|h| std::path::PathBuf::from(h).join("Documents"))
-                        .unwrap_or_default();
-                    let name = backup::file_name(b);
-                    let rx = this.update(cx, |_, cx| cx.prompt_for_new_path(&dir, Some(&name))).ok();
-                    match rx {
-                        Some(rx) => rx.await.ok().and_then(|p| p.ok()).flatten(),
-                        None => None,
-                    }
-                }
-                Err(_) => None,
-            };
+            let written = r.map(|b| std::fs::write(&path, backup::to_json(&b)));
             this.update(cx, |s, cx| {
                 if s.connection_gen != connection {
                     return;
                 }
                 s.transitioning = false;
                 s.features.backup.busy = None;
-                match (r, path) {
-                    (Ok(b), Some(path)) => match std::fs::write(&path, backup::to_json(&b)) {
-                        Ok(()) => s.toast("Backup saved", false, cx),
-                        Err(e) => s.features.backup.error = Some(format!("Saving the file failed: {e}")),
-                    },
-                    (Ok(_), None) => {}
-                    (Err(e), _) => s.features.backup.error = Some(format!("Backup failed: {e:#}")),
+                match written {
+                    Ok(Ok(())) => s.toast("Backup saved", false, cx),
+                    Ok(Err(e)) => s.features.backup.error = Some(format!("Saving the file failed: {e}")),
+                    Err(e) => s.features.backup.error = Some(format!("Backup failed: {e:#}")),
                 }
                 cx.notify();
             })
@@ -1346,9 +1350,12 @@ impl AppView {
         let cell = self.progress_cell(cx);
         self.transitioning = true;
         let connection = self.connection_gen;
-        let result = self.device.as_ref().unwrap().client.submit(move |kb| {
+        let Some(client) = self.device.as_ref().map(|d| d.client.clone()) else {
+            return;
+        };
+        let result = client.submit(move |kb| {
             backup::read(kb, &name, fn_layers, &mut |d, t, l| {
-                *cell.lock().unwrap() = (d, t, format!("Comparing with keyboard · {l}"));
+                *crate::protocol::hid::lock(&cell) = (d, t, format!("Comparing with keyboard · {l}"));
             })
         });
         cx.spawn(async move |this, cx| {
@@ -1389,10 +1396,13 @@ impl AppView {
         self.key_gen += 1;
         self.light_gen += 1;
         let connection = self.connection_gen;
-        let result = self.device.as_ref().unwrap().client.submit(move |kb| {
+        let Some(client) = self.device.as_ref().map(|d| d.client.clone()) else {
+            return;
+        };
+        let result = client.submit(move |kb| {
             // The comparison shown was read when the file was opened; plan against the keyboard as it is now.
             let restored = backup::restore_fresh(kb, &name, fn_layers, &target, &mut |d, t, l| {
-                *cell.lock().unwrap() = (d, t, l.to_string());
+                *crate::protocol::hid::lock(&cell) = (d, t, l.to_string());
             });
             // Re-read even after a failure, so the pages show what the keyboard really holds.
             let fresh = super::reload(kb);
@@ -1411,6 +1421,7 @@ impl AppView {
                     Ok((restored, fresh, rate)) => {
                         if let (Some(d), Ok(fresh)) = (s.device.as_mut(), fresh) {
                             fresh.apply(d);
+                            s.history.clear();
                             d.report_rate = rate;
                             d.macros.clear();
                         }

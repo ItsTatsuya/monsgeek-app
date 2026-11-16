@@ -202,7 +202,7 @@ impl KeyboardClient {
             mag_frame(mag::DKS_TRAVEL, index as u8, &t.to_le_bytes()),
             mag_frame(mag::DKS_MODES, index as u8, &cells),
         ];
-        frames.last_mut().unwrap()[4] = 1; // commit
+        frames[1][4] = 1; // commit
         self.write(&frames, Checksum::Bit7, Duration::from_millis(200))
     }
 

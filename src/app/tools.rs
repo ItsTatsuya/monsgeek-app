@@ -50,6 +50,10 @@ pub struct Tools {
     pub recent_apps: Vec<(String, String)>,
     auto_gen: u64,
     pub rule_text: String,
+    /// The app is registered to open at sign-in (read from the registry at start).
+    pub launch_at_login: bool,
+    /// Bumped on each profile-name edit; the config is saved when it stops changing.
+    pub name_gen: u64,
     /// The main window, hidden to the tray on close while automatic profiles run.
     pub hwnd: isize,
     // Polling-rate test.
@@ -80,6 +84,8 @@ impl Tools {
             recent_apps: Vec::new(),
             auto_gen: 0,
             rule_text: String::new(),
+            launch_at_login: crate::win::launches_at_login(),
+            name_gen: 0,
             hwnd: 0,
             capture: None,
             poll_gen: 0,
@@ -144,6 +150,12 @@ impl AppView {
 
     /// Keep the pages in step with changes made on the keyboard: profile, Fn layer and lighting.
     fn on_vendor_event(&mut self, e: VendorEvent, cx: &mut Context<Self>) {
+        if e == VendorEvent::Lost {
+            if self.keyboard_gone() {
+                self.lost_keyboard(cx);
+            }
+            return;
+        }
         let Some(d) = self.device.as_ref() else {
             return;
         };
@@ -170,6 +182,7 @@ impl AppView {
                         s.light_gen += 1;
                         fresh.apply(d);
                         s.selection.clear();
+                        s.history.clear();
                         s.features.adv = None;
                         s.features.macro_draft = None;
                     } else if !quiet && d.lighting == d.committed_lighting {
@@ -244,7 +257,7 @@ impl AppView {
             return;
         };
         self.config.layer_looks.insert(id, looks);
-        self.config.save();
+        self.save_config(cx);
         self.schedule_layer_lighting(cx);
         cx.notify();
     }
@@ -295,7 +308,7 @@ impl AppView {
 
     pub fn edit_auto(&mut self, f: impl FnOnce(&mut crate::config::AutoProfiles), cx: &mut Context<Self>) {
         f(&mut self.config.auto_profiles);
-        self.config.save();
+        self.save_config(cx);
         self.sync_auto(cx);
         self.schedule_auto_switch(cx);
         cx.notify();
@@ -304,7 +317,8 @@ impl AppView {
     /// Start or stop the foreground watcher and the tray icon to match the settings.
     pub fn sync_auto(&mut self, cx: &mut Context<Self>) {
         let a = &self.config.auto_profiles;
-        let (enabled, tray) = (a.enabled, a.enabled && a.tray);
+        // The tray icon serves automatic profiles, and starting hidden at sign-in.
+        let (enabled, tray) = (a.enabled, (a.enabled && a.tray) || self.config.start_in_tray);
         if enabled && self.tools.watcher.is_none() {
             let (tx, rx) = async_channel::unbounded();
             self.tools.watcher = Some(ForegroundWatcher::start(tx));
@@ -323,7 +337,8 @@ impl AppView {
         }
         if tray && self.tools.tray.is_none() {
             let (tx, rx) = async_channel::unbounded();
-            self.tools.tray = Some(Tray::start("Monsgeek App · automatic profiles on", tx));
+            let tip = if enabled { "Monsgeek App · automatic profiles on" } else { "Monsgeek App" };
+            self.tools.tray = Some(Tray::start(tip, tx));
             cx.spawn(async move |this, cx| {
                 while let Ok(e) = rx.recv().await {
                     let r = this.update(cx, |s, cx| match e {

@@ -10,12 +10,12 @@ impl AppView {
         none: bool,
         on: impl Fn(&mut AppView, Option<u8>, &mut Cx) + 'static,
         cx: &mut Cx,
-    ) -> Div {
+    ) -> ButtonGroup {
         let mut options: Vec<(i8, String)> = Vec::new();
         if none {
             options.push((-1, "Don't change".into()));
         }
-        options.extend((0..4).map(|p| (p as i8, (p + 1).to_string())));
+        options.extend((0..crate::app::PROFILES).map(|p| (p as i8, self.profile_name(p))));
         self.segmented(
             id,
             options,
@@ -37,7 +37,7 @@ impl AppView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(u(8.))
                         .child(div().text_color(t.muted).child("Now in front:"))
                         .child(self.kbd(exe.clone()))
                         .child(div().text_color(t.muted).child("→"))
@@ -45,11 +45,11 @@ impl AppView {
                             None => div().text_color(t.muted).child("no change"),
                             Some(p) => div().font_weight(FontWeight::SEMIBOLD).child(format!("Profile {}", p + 1)),
                         })
-                        .when(target.is_some() && target == profile, |el| el.child(div().size(px(7.)).rounded_full().bg(t.ok)))
+                        .when(target.is_some() && target == profile, |el| el.child(div().size(u(7.)).rounded_full().bg(t.ok)))
                 }
                 None => div().text_color(t.muted).child("Waiting for the foreground app…"),
             };
-            div().p(px(12.)).rounded(px(8.)).bg(t.surface_2).child(content)
+            div().p(u(12.)).rounded(u(8.)).bg(t.surface_2).child(content)
         });
         let main = self.card(
             "Automatic profiles",
@@ -61,7 +61,7 @@ impl AppView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(u(12.))
                 .child(self.setting_row(
                     "Everything else",
                     "Profile for apps without a rule.",
@@ -78,7 +78,7 @@ impl AppView {
         let rules = div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(u(6.))
             .when(a.rules.is_empty(), |el| {
                 el.child(div().text_color(t.muted).child("No rules yet. Add a game below, or pick one you've had open."))
             })
@@ -86,12 +86,12 @@ impl AppView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(10.))
-                    .py(px(6.))
-                    .rounded(px(8.))
+                    .gap(u(10.))
+                    .px(u(10.))
+                    .py(u(6.))
+                    .rounded(u(8.))
                     .bg(t.surface_2)
-                    .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(NUM_FONT).text_size(px(12.5)).child(r.exe.clone()))
+                    .child(div().flex_1().min_w(u(0.)).overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(NUM_FONT).text_size(u(12.5)).child(r.exe.clone()))
                     .child(self.profile_picker(
                         ("ap-rule", i),
                         Some(r.profile),
@@ -105,29 +105,31 @@ impl AppView {
                     ))
                     .child(
                         self.small_button(("ap-del", i), "✕", Btn::Ghost, true)
+                            .accessibility_label("Remove rule")
+                            .tooltip("Remove rule")
                             .on_click(cx.listener(move |this, _, _, cx| this.edit_auto(|a| { a.rules.remove(i); }, cx))),
                     )
             }));
         let text = self.tools.rule_text.clone();
         let add = div()
             .flex()
-            .gap(px(8.))
-            .child(self.text_field(Field::RuleExe, &text, "App name, e.g. VALORANT-Win64-Shipping.exe", 360., cx))
+            .gap(u(8.))
+            .children(self.pickers.as_ref().map(|p| {
+                div().w(u(360.)).child(gpui::component::input::Input::new(&p.rule_exe).small())
+            }))
             .child(
                 self.button("ap-add", "Add rule", Btn::Normal)
-                    .when(text.trim().is_empty(), |b| b.opacity(0.45))
-                    .when(!text.trim().is_empty(), |b| {
-                        b.on_click(cx.listener(|this, _, _, cx| {
-                            let text = this.tools.rule_text.clone();
-                            this.add_rule(&text, cx)
-                        }))
-                    }),
+                    .disabled(text.trim().is_empty())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let text = this.tools.rule_text.clone();
+                        this.add_rule(&text, cx)
+                    })),
             );
         let rules_card = self.card(
             "Rules",
             Some("The first matching app name wins. Names are matched without regard to case."),
             None,
-            div().flex().flex_col().gap(px(14.)).child(rules).child(add),
+            div().flex().flex_col().gap(u(14.)).child(rules).child(add),
         );
 
         let suggestions: Vec<(String, String)> = self
@@ -142,22 +144,16 @@ impl AppView {
         } else if suggestions.is_empty() {
             div().text_color(t.muted).child("Nothing new yet. Switch to the app you want a rule for, then come back.")
         } else {
-            div().flex().flex_col().gap(px(6.)).children(suggestions.into_iter().enumerate().map(|(i, (exe, title))| {
+            div().flex().flex_col().gap(u(6.)).children(suggestions.into_iter().enumerate().map(|(i, (exe, title))| {
                 let add = exe.clone();
-                div()
-                    .id(("ap-recent", i))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .px(px(10.))
-                    .py(px(6.))
-                    .rounded(px(8.))
-                    .bg(t.surface_2)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(t.hover))
+                Button::new(("ap-recent", i))
+                    .ghost()
+                    .w_full()
+                    .gap(u(10.))
+                    .accessibility_label(format!("Add a rule for {exe}"))
                     .on_click(cx.listener(move |this, _, _, cx| this.add_rule(&add, cx)))
                     .child(self.kbd(exe))
-                    .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(t.muted).text_size(px(12.5)).child(title))
+                    .child(div().flex_1().min_w(u(0.)).overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(t.muted).text_size(u(12.5)).child(title))
                     .child(self.pill("+ Rule"))
             }))
         };
@@ -170,20 +166,20 @@ impl AppView {
 
         div()
             .flex()
-            .gap(px(16.))
+            .gap(u(16.))
             .items_start()
             .when(self.narrow(), |d| d.flex_col())
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(0.))
+                    .min_w(u(0.))
                     .when(self.narrow(), |d| d.w_full())
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
+                    .gap(u(16.))
                     .child(main)
                     .child(rules_card),
             )
-            .child(div().w(px(380.)).flex_none().when(self.narrow(), |d| d.w_full()).child(recent_card))
+            .child(div().w(u(380.)).flex_none().when(self.narrow(), |d| d.w_full()).child(recent_card))
     }
 }

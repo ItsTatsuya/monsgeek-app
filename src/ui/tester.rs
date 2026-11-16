@@ -26,12 +26,14 @@ impl AppView {
             TesterTab::Polling => self.polling_tester(cx),
             TesterTab::Calibration => self.calibration(cx),
         };
-        div().flex().flex_col().gap(px(16.)).child(tabs).child(body)
+        div().flex().flex_col().gap(u(16.)).child(tabs).child(body)
     }
 
     fn switch_tester(&mut self, cx: &mut Cx) -> Div {
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let travel = self.travel.clone();
         let keys = d.keys.clone();
         let names = d.defaults.clone();
@@ -70,7 +72,7 @@ impl AppView {
         let toolbar = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(u(8.))
             .child(div().flex_1().text_color(t.muted).child("Press keys on your keyboard · click one to pin and tune it"));
 
         // Travel bar: fill from the top, actuation line, next predicted threshold, dead zone.
@@ -78,9 +80,9 @@ impl AppView {
         let bar = div()
             .relative()
             .flex_none()
-            .w(px(26.))
-            .h(px(bar_h))
-            .rounded(px(6.))
+            .w(u(26.))
+            .h(u(bar_h))
+            .rounded(u(6.))
             .bg(t.surface_2)
             .border_1()
             .border_color(t.border)
@@ -89,59 +91,59 @@ impl AppView {
             .children(settings.filter(|s| s.deadzone > 0.0).map(|s| {
                 div().absolute().bottom_0().left_0().w_full().h(relative(s.deadzone / MAX_TRAVEL)).bg(t.muted.opacity(0.25))
             }))
-            .children(settings.map(|s| div().absolute().left_0().w_full().h(px(2.)).top(px(bar_h * s.actuation / MAX_TRAVEL)).bg(t.actuation)))
+            .children(settings.map(|s| div().absolute().left_0().w_full().h(u(2.)).top(u(bar_h * s.actuation / MAX_TRAVEL)).bg(t.actuation)))
             .children(next.filter(|_| predicted.in_rt).map(|(kind, at)| {
                 div()
                     .absolute()
                     .left_0()
                     .w_full()
-                    .h(px(2.))
-                    .top(px(bar_h * (at / MAX_TRAVEL).clamp(0.0, 1.0)))
+                    .h(u(2.))
+                    .top(u(bar_h * (at / MAX_TRAVEL).clamp(0.0, 1.0)))
                     .bg(if kind == RtEvent::Press { t.rt } else { t.warn })
             }));
         let stat = |label: &'static str, v: String, color: Hsla| {
             div()
                 .flex()
-                .gap(px(6.))
-                .text_size(px(12.5))
+                .gap(u(6.))
+                .text_size(u(12.5))
                 .child(div().text_color(t.muted).child(label))
                 .child(div().font_family(NUM_FONT).text_color(color).child(v))
         };
         let badge_on = config.is_some() && predicted.on;
         let readout = div()
             .flex_1()
-            .min_w(px(0.))
+            .min_w(u(0.))
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .child(div().text_color(t.muted).text_size(px(12.)).child("Travel"))
+            .gap(u(12.))
+            .child(div().text_color(t.muted).text_size(u(12.)).child("Travel"))
             .child(
                 div()
                     .flex()
                     .items_end()
-                    .gap(px(6.))
-                    .child(div().w(px(110.)).font_family(NUM_FONT).text_size(px(34.)).child(format!("{value:.2}")))
-                    .child(div().text_color(t.muted).pb(px(7.)).child("mm")),
+                    .gap(u(6.))
+                    .child(div().w(u(110.)).font_family(NUM_FONT).text_size(u(34.)).child(format!("{value:.2}")))
+                    .child(div().text_color(t.muted).pb(u(7.)).child("mm")),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(u(8.))
                     .child(
                         div()
-                            .w(px(40.))
+                            .w(u(40.))
                             .flex()
                             .justify_center()
-                            .py(px(2.))
-                            .rounded(px(5.))
-                            .text_size(px(11.))
+                            .py(u(2.))
+                            .rounded(u(5.))
+                            .text_size(u(11.))
                             .font_weight(FontWeight::BOLD)
                             .bg(if badge_on { t.rt } else { t.surface_3 })
                             .text_color(if badge_on { t.on_accent } else { t.muted })
                             .child(if config.is_none() { "—" } else if predicted.on { "ON" } else { "OFF" }),
                     )
-                    .child(div().flex_1().text_color(t.muted).text_size(px(12.5)).child(match (config, next) {
+                    .child(div().flex_1().text_color(t.muted).text_size(u(12.5)).child(match (config, next) {
                         (Some(_), Some((kind, at))) => format!(
                             "predicted · {} {at:.2} mm",
                             if kind == RtEvent::Press { "presses at" } else { "releases at" }
@@ -162,7 +164,7 @@ impl AppView {
                 t.rt,
             ))
             .child(div().child(
-                self.small_button("peaks", "Reset peaks", Btn::Actuation, true)
+                self.small_button("peaks", "Reset peaks", Btn::Normal, true)
                     .on_click(cx.listener(|this, _, _, cx| this.reset_peaks(cx))),
             ));
 
@@ -172,19 +174,19 @@ impl AppView {
             div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(u(12.))
                 .child(
                     div()
                         .flex_1()
-                        .min_w(px(0.))
+                        .min_w(u(0.))
                         .text_color(t.muted)
-                        .text_size(px(12.5))
+                        .text_size(u(12.5))
                         .child("Pin a key to tune its actuation and Rapid Trigger here."),
                 )
                 .child(
                     self.small_button("pin", focus.map_or("Pin key".into(), |_| format!("Pin {focus_name}")), Btn::Primary, focus.is_some())
                         .flex_none()
-                        .min_w(px(96.))
+                        .min_w(u(96.))
                         .when_some(focus, |b, i| {
                             b.on_click(cx.listener(move |this, _, _, cx| {
                                 this.selection = vec![i];
@@ -204,21 +206,21 @@ impl AppView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(16.))
-                .child(div().flex().gap(px(24.)).child(bar).child(readout))
-                .child(div().pt(px(12.)).border_t_1().border_color(t.border).child(tune)),
+                .gap(u(16.))
+                .child(div().flex().gap(u(24.)).child(bar).child(readout))
+                .child(div().pt(u(12.)).border_t_1().border_color(t.border).child(tune)),
         );
 
         let presses = self.tools.log.iter().filter(|e| e.event == RtEvent::Press).count();
         let log = div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(u(6.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).text_size(px(13.)).child(if self.tools.log.is_empty() {
+                    .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).text_size(u(13.)).child(if self.tools.log.is_empty() {
                         "Predicted events".to_string()
                     } else {
                         format!("Predicted events · {presses} {}", if presses == 1 { "press" } else { "presses" })
@@ -232,16 +234,16 @@ impl AppView {
                     ),
             )
             .when(self.tools.log.is_empty(), |el| {
-                el.child(div().text_color(t.muted).text_size(px(12.5)).child("Press the focused key to see where it would fire."))
+                el.child(div().text_color(t.muted).text_size(u(12.5)).child("Press the focused key to see where it would fire."))
             })
             .children(self.tools.log.iter().map(|e| {
                 let press = e.event == RtEvent::Press;
                 div()
                     .flex()
-                    .gap(px(16.))
-                    .text_size(px(12.5))
-                    .child(div().w(px(70.)).font_family(NUM_FONT).text_color(t.muted).child(format!("{:.2} s", e.at)))
-                    .child(div().w(px(80.)).text_color(if press { t.rt } else { t.warn }).child(if press { "↓ press" } else { "↑ release" }))
+                    .gap(u(16.))
+                    .text_size(u(12.5))
+                    .child(div().w(u(70.)).font_family(NUM_FONT).text_color(t.muted).child(format!("{:.2} s", e.at)))
+                    .child(div().w(u(80.)).text_color(if press { t.rt } else { t.warn }).child(if press { "↓ press" } else { "↑ release" }))
                     .child(div().font_family(NUM_FONT).child(format!("{:.2} mm", e.depth)))
             }));
         let graph_card = self.card(
@@ -251,9 +253,9 @@ impl AppView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(u(12.))
                 .child(self.travel_graph(settings.map(|s| s.actuation), next.filter(|_| predicted.in_rt)))
-                .child(div().text_color(t.muted).text_size(px(12.)).child(if self.demo {
+                .child(div().text_color(t.muted).text_size(u(12.)).child(if self.demo {
                     "Travel streams from the keyboard as the key moves, so the prediction follows every movement. Demo mode simulates key presses."
                 } else {
                     "Travel streams from the keyboard as the key moves, so the prediction follows every movement."
@@ -264,23 +266,25 @@ impl AppView {
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(u(16.))
             .child(self.keyboard_card(Some(toolbar.into_any_element()), board))
             .child(
                 div()
                     .flex()
-                    .gap(px(16.))
+                    .gap(u(16.))
                     .items_start()
                     .when(self.narrow(), |d| d.flex_col())
-                    .child(div().w(px(420.)).flex_none().when(self.narrow(), |d| d.w_full()).child(key_card))
-                    .child(div().flex_1().min_w(px(0.)).when(self.narrow(), |d| d.w_full()).child(graph_card)),
+                    .child(div().w(u(420.)).flex_none().when(self.narrow(), |d| d.w_full()).child(key_card))
+                    .child(div().flex_1().min_w(u(0.)).when(self.narrow(), |d| d.w_full()).child(graph_card)),
             )
     }
 
     /// Compact Performance controls for the key pinned in the switch tester.
     fn rt_tuner(&mut self, index: usize, name: &str, cx: &mut Cx) -> Div {
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let k = d.keys[index];
         let (min, max) = d.def.travel();
         let step = if d.info.steps_per_mm >= 200.0 { 0.005 } else { 0.01 };
@@ -291,14 +295,14 @@ impl AppView {
         div()
             .flex()
             .flex_col()
-            .gap(px(14.))
+            .gap(u(14.))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(10.))
-                    .child(div().text_color(t.muted).text_size(px(12.5)).child("Apply to"))
+                    .gap(u(10.))
+                    .child(div().text_color(t.muted).text_size(u(12.5)).child("Apply to"))
                     .child(self.segmented(
                         "tune-scope",
                         vec![
@@ -313,14 +317,14 @@ impl AppView {
                         },
                         cx,
                     ))
-                    .child(div().text_color(t.muted).text_size(px(12.)).child(format!("{count} {}", if count == 1 { "key" } else { "keys" }))),
+                    .child(div().text_color(t.muted).text_size(u(12.)).child(format!("{count} {}", if count == 1 { "key" } else { "keys" }))),
             )
             .child(self.slider("Actuation", Some(k.actuation), SliderDrag { id: SliderId::Actuation, min, max, step }, "mm", false, cx))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).text_size(px(13.)).child("Rapid Trigger"))
+                    .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).text_size(u(13.)).child("Rapid Trigger"))
                     .child(rt_toggle),
             )
             .when(k.rapid_trigger, |el| {
@@ -337,18 +341,18 @@ impl AppView {
         let labels = [1.0f32, 2.0, 3.0].map(|mm| {
             div()
                 .absolute()
-                .left(px(6.))
-                .top(px(GRAPH_H * mm / MAX_TRAVEL - 16.))
+                .left(u(6.))
+                .top(u(GRAPH_H * mm / MAX_TRAVEL - 16.))
                 .text_color(t.muted)
-                .text_size(px(11.))
+                .text_size(u(11.))
                 .font_family(NUM_FONT)
                 .child(format!("{mm:.0} mm"))
         });
         div()
             .relative()
             .w_full()
-            .h(px(GRAPH_H))
-            .rounded(px(8.))
+            .h(u(GRAPH_H))
+            .rounded(u(8.))
             .bg(t.surface_2)
             .overflow_hidden()
             .children(labels)
@@ -416,7 +420,9 @@ impl AppView {
 
     fn polling_tester(&mut self, cx: &mut Cx) -> Div {
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let configured = d.report_rate;
         let est = self.tools.estimate();
         let running = self.tools.polling();
@@ -425,15 +431,15 @@ impl AppView {
         let line = |label: &'static str, v: String| {
             div()
                 .flex()
-                .gap(px(6.))
-                .text_size(px(12.5))
+                .gap(u(6.))
+                .text_size(u(12.5))
                 .child(div().text_color(t.muted).child(label))
                 .child(div().child(v))
         };
         let controls = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(u(8.))
             .child(
                 self.button("poll-run", if running { "Stop" } else { "Start test" }, if running { Btn::Normal } else { Btn::Primary })
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -446,15 +452,15 @@ impl AppView {
             )
             .child(
                 self.button("poll-reset", "Reset", Btn::Ghost)
-                    .when(self.tools.poll_times.is_empty(), |b| b.opacity(0.45))
+                    .disabled(self.tools.poll_times.is_empty())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tools.poll_times.clear();
                         cx.notify();
                     })),
             )
             .when(running, |el| {
-                el.child(div().flex().items_center().gap(px(6.)).text_color(t.muted).text_size(px(12.5)).child(
-                    div().size(px(8.)).rounded_full().bg(if self.tools.poll_ready { t.ok } else { t.muted }),
+                el.child(div().flex().items_center().gap(u(6.)).text_color(t.muted).text_size(u(12.5)).child(
+                    div().size(u(8.)).rounded_full().bg(if self.tools.poll_ready { t.ok } else { t.muted }),
                 ).child(if self.tools.poll_ready { "Listening — mash keys now" } else { "Starting…" }))
             });
         let left = self.card(
@@ -464,7 +470,7 @@ impl AppView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(16.))
+                .gap(u(16.))
                 .child(controls)
                 .children(self.tools.poll_error.clone().map(|e| self.banner(e, t.danger)))
                 .when(self.demo, |el| {
@@ -474,15 +480,15 @@ impl AppView {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(4.))
-                        .child(div().text_color(t.muted).text_size(px(12.)).child("Detected polling rate"))
+                        .gap(u(4.))
+                        .child(div().text_color(t.muted).text_size(u(12.)).child("Detected polling rate"))
                         .child(
                             div()
                                 .flex()
                                 .items_end()
-                                .gap(px(6.))
-                                .child(div().font_family(NUM_FONT).text_size(px(40.)).child(est.hz.map_or("—".into(), fmt)))
-                                .child(div().text_color(t.muted).pb(px(9.)).child("Hz")),
+                                .gap(u(6.))
+                                .child(div().font_family(NUM_FONT).text_size(u(40.)).child(est.hz.map_or("—".into(), fmt)))
+                                .child(div().text_color(t.muted).pb(u(9.)).child("Hz")),
                         )
                         .child(line(
                             "Measured interval:",
@@ -491,8 +497,8 @@ impl AppView {
                         .child(
                             div()
                                 .flex()
-                                .gap(px(6.))
-                                .text_size(px(12.5))
+                                .gap(u(6.))
+                                .text_size(u(12.5))
                                 .child(div().text_color(t.muted).child("Keyboard setting:"))
                                 .child(configured.map_or("fixed by firmware".into(), |hz| format!("{hz} Hz")))
                                 .children(matches.map(|m| {
@@ -504,7 +510,7 @@ impl AppView {
                             format!("{} · USB reports: {} · timing samples: {}", est.events, est.reports, est.evidence),
                         ))
                         .when(est.hz.is_none() && est.events > 0, |el| {
-                            el.child(div().pt(px(6.)).text_color(t.muted).text_size(px(12.5)).child(
+                            el.child(div().pt(u(6.)).text_color(t.muted).text_size(u(12.5)).child(
                                 "Not enough simultaneous presses yet. Keep slamming several keys at once.",
                             ))
                         }),
@@ -512,36 +518,36 @@ impl AppView {
         );
         let max = est.histogram.iter().copied().max().unwrap_or(0).max(1) as f32;
         let bars = div()
-            .h(px(200.))
+            .h(u(200.))
             .flex()
             .items_end()
-            .gap(px(2.))
+            .gap(u(2.))
             .children(est.histogram.iter().map(|&n| {
                 div()
                     .flex_1()
                     .h(relative((n as f32 / max).max(0.02) * 0.92))
-                    .rounded_t(px(3.))
+                    .rounded_t(u(3.))
                     .bg(if n > 0 { t.accent } else { t.surface_3 })
             }));
         let axis = div()
             .flex()
             .justify_between()
             .text_color(t.muted)
-            .text_size(px(11.))
+            .text_size(u(11.))
             .font_family(NUM_FONT)
             .children((0..=4).map(|i| div().child(format!("{:.1} ms", i as f64 * BIN_US * BINS as f64 / 4.0 / 1000.0))));
         let right = self.card(
             "Gap between reports",
             Some("Gaps cluster at multiples of the polling interval: 125 µs steps at 8K, 250 µs at 4K, 1 ms at 1K."),
             None,
-            div().flex().flex_col().gap(px(8.)).child(bars).child(axis),
+            div().flex().flex_col().gap(u(8.)).child(bars).child(axis),
         );
         div()
             .flex()
-            .gap(px(16.))
+            .gap(u(16.))
             .items_start()
             .when(self.narrow(), |d| d.flex_col())
-            .child(div().flex_1().min_w(px(0.)).when(self.narrow(), |d| d.w_full()).child(left))
-            .child(div().flex_1().min_w(px(0.)).when(self.narrow(), |d| d.w_full()).child(right))
+            .child(div().flex_1().min_w(u(0.)).when(self.narrow(), |d| d.w_full()).child(left))
+            .child(div().flex_1().min_w(u(0.)).when(self.narrow(), |d| d.w_full()).child(right))
     }
 }

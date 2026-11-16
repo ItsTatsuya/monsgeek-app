@@ -67,7 +67,7 @@ impl AppView {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(12.))
+            .gap(u(12.))
             .child(self.segmented(
                 "macro-mode",
                 MODES.iter().map(|m| (m.0, m.1.to_string())).collect(),
@@ -80,7 +80,7 @@ impl AppView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(u(8.))
                         .text_color(t.muted)
                         .child("Times")
                         .child(self.text_field(Field::Repeat, &draft.repeat.to_string(), "1", 64., cx)),
@@ -91,7 +91,7 @@ impl AppView {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(8.))
+            .gap(u(8.))
             .child(
                 self.button(
                     "macro-record",
@@ -104,9 +104,9 @@ impl AppView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(u(8.))
                     .text_color(t.muted)
-                    .text_size(px(12.5))
+                    .text_size(u(12.5))
                     .child(self.toggle(
                         "macro-timing",
                         real,
@@ -132,10 +132,10 @@ impl AppView {
         let steps = div()
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .max_h(px(360.))
-            .p(px(8.))
-            .rounded(px(10.))
+            .gap(u(4.))
+            .max_h(u(360.))
+            .p(u(8.))
+            .rounded(u(10.))
             .bg(t.surface_2)
             .border_1()
             .border_color(t.border)
@@ -146,7 +146,7 @@ impl AppView {
                 ))
             })
             .when(!loading && draft.steps.is_empty(), |el| {
-                el.child(div().p(px(6.)).text_color(t.muted).child(
+                el.child(div().p(u(6.)).text_color(t.muted).child(
                     "No steps yet. Record, type some text, or click keys below to add taps.",
                 ))
             })
@@ -154,22 +154,22 @@ impl AppView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(6.))
-                    .py(px(2.))
-                    .child(div().w(px(24.)).text_color(t.muted).font_family(NUM_FONT).text_size(px(12.)).child((i + 1).to_string()))
+                    .gap(u(10.))
+                    .px(u(6.))
+                    .py(u(2.))
+                    .child(div().w(u(24.)).text_color(t.muted).font_family(NUM_FONT).text_size(u(12.)).child((i + 1).to_string()))
                     .child(
                         div()
-                            .w(px(14.))
+                            .w(u(14.))
                             .text_color(if s.down { t.accent_strong } else { t.rt })
                             .child(if s.down { "↓" } else { "↑" }),
                     )
                     .child(self.kbd(macro_key_label(s.key)))
-                    .child(div().text_color(t.muted).text_size(px(12.)).child(if s.down { "press" } else { "release" }))
+                    .child(div().text_color(t.muted).text_size(u(12.)).child(if s.down { "press" } else { "release" }))
                     .child(div().flex_1())
-                    .child(div().text_color(t.muted).text_size(px(12.)).child("then wait"))
+                    .child(div().text_color(t.muted).text_size(u(12.)).child("then wait"))
                     .child(self.text_field(Field::Delay(i), &s.delay.to_string(), "0", 72., cx))
-                    .child(div().text_color(t.muted).text_size(px(12.)).child("ms"))
+                    .child(div().text_color(t.muted).text_size(u(12.)).child("ms"))
                     .child(
                         self.small_button(("macro-del", i), "✕", Btn::Ghost, true).on_click(cx.listener(
                             move |this, _, _, cx| {
@@ -193,10 +193,10 @@ impl AppView {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(10.))
+            .gap(u(10.))
             .child(
                 div()
-                    .text_size(px(12.5))
+                    .text_size(u(12.5))
                     .text_color(if too_big { t.danger } else { t.muted })
                     .child(format!(
                         "{} steps · {:.2} s · {size} / {MACRO_BYTES} bytes",
@@ -207,10 +207,8 @@ impl AppView {
             .child(div().flex_1())
             .child(
                 self.button("macro-revert", "Revert", Btn::Normal)
-                    .when(!dirty || recording, |b| b.opacity(0.45))
-                    .when(dirty && !recording, |b| {
-                        b.on_click(cx.listener(|this, _, _, cx| this.revert_macro(cx)))
-                    }),
+                    .disabled(!dirty || recording)
+                    .on_click(cx.listener(|this, _, _, cx| this.revert_macro(cx))),
             )
             .child(
                 self.button(
@@ -218,30 +216,30 @@ impl AppView {
                     if bound.is_some() { "Save macro".to_string() } else { format!("Assign macro to {key_label}") },
                     Btn::Primary,
                 )
-                .when(!can_save, |b| b.opacity(0.45))
-                .when(can_save, |b| b.on_click(cx.listener(|this, _, _, cx| this.save_macro(cx)))),
+                .disabled(!can_save)
+                .on_click(cx.listener(|this, _, _, cx| this.save_macro(cx))),
             );
 
         let text_row = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(u(8.))
             .child(self.section_label("Type text"))
             .child(
                 div()
                     .flex()
-                    .gap(px(8.))
-                    .child(self.text_field(Field::MacroText, &self.features.macro_text, "e.g. gg wp", 320., cx))
+                    .gap(u(8.))
+                    .children(self.pickers.as_ref().map(|p| {
+                        div().w(u(320.)).child(gpui::component::input::Input::new(&p.macro_text).small())
+                    }))
                     .child(
                         self.button("macro-add-text", "Add as keystrokes", Btn::Normal)
-                            .when(self.features.macro_text.is_empty(), |b| b.opacity(0.45))
-                            .when(!self.features.macro_text.is_empty(), |b| {
-                                b.on_click(cx.listener(|this, _, _, cx| this.add_macro_text(cx)))
-                            }),
+                            .disabled(self.features.macro_text.is_empty())
+                            .on_click(cx.listener(|this, _, _, cx| this.add_macro_text(cx))),
                     ),
             )
             .when(!skipped.is_empty(), |el| {
-                el.child(div().text_color(t.muted).text_size(px(12.)).child(format!(
+                el.child(div().text_color(t.muted).text_size(u(12.)).child(format!(
                     "Will skip characters a US layout can't type directly: {}",
                     skipped.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" ")
                 )))
@@ -271,9 +269,9 @@ impl AppView {
         let tap_section = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(u(8.))
             .child(self.section_label("Add a key tap"))
-            .child(div().text_color(t.muted).text_size(px(12.5)).child(mods_text))
+            .child(div().text_color(t.muted).text_size(u(12.5)).child(mods_text))
             .child(
                 div()
                     .when(recording, |el| el.opacity(0.45))
@@ -294,9 +292,9 @@ impl AppView {
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(u(16.))
             .child(top)
-            .child(div().text_color(t.muted).text_size(px(12.5)).child(hint))
+            .child(div().text_color(t.muted).text_size(u(12.5)).child(hint))
             .child(record_row)
             .when(recording, |el| {
                 el.child(self.banner(
@@ -330,7 +328,7 @@ impl AppView {
 
     pub(super) fn section_label(&self, text: &'static str) -> Div {
         div()
-            .text_size(px(11.))
+            .text_size(u(11.))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(self.theme.muted)
             .child(text.to_uppercase())

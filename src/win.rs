@@ -419,6 +419,74 @@ pub fn show_window(hwnd: isize, show: bool) {
     }
 }
 
+// ---- open at sign-in ----------------------------------------------------------------------------
+
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VALUE: &str = "Monsgeek App";
+
+/// The command Windows runs at sign-in: this exe, starting in the tray.
+fn run_command() -> std::io::Result<String> {
+    let exe = std::env::current_exe()?;
+    Ok(format!("\"{}\" --tray", exe.display()))
+}
+
+/// Whether the app is set to open at sign-in (for this exe, as it is now).
+pub fn launches_at_login() -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    let (key, value) = (wide(RUN_KEY), wide(RUN_VALUE));
+    let mut buf = [0u16; 1024];
+    let mut len = (buf.len() * 2) as u32;
+    let found = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+        )
+    } == 0;
+    found && {
+        let text = String::from_utf16_lossy(&buf[..(len as usize / 2).saturating_sub(1)]);
+        run_command().is_ok_and(|c| c.eq_ignore_ascii_case(&text))
+    }
+}
+
+/// Adds or removes the sign-in entry under HKCU\...\Run.
+pub fn set_launch_at_login(on: bool) -> std::io::Result<()> {
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+        KEY_SET_VALUE, REG_SZ,
+    };
+    let key_name = wide(RUN_KEY);
+    let value = wide(RUN_VALUE);
+    let mut key: HKEY = std::ptr::null_mut();
+    let status = unsafe {
+        // The Run key exists on every Windows install.
+        RegOpenKeyExW(HKEY_CURRENT_USER, key_name.as_ptr(), 0, KEY_SET_VALUE, &mut key)
+    };
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status as i32));
+    }
+    let status = if on {
+        let data = wide(&run_command()?);
+        unsafe {
+            RegSetValueExW(key, value.as_ptr(), 0, REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32)
+        }
+    } else {
+        match unsafe { RegDeleteValueW(key, value.as_ptr()) } {
+            2 => 0, // ERROR_FILE_NOT_FOUND: already off.
+            s => s,
+        }
+    };
+    unsafe { RegCloseKey(key) };
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(())
+}
+
 /// The Win32 handle behind a GPUI window.
 /// Moves a window far off-screen without resizing, activating or raising it (--shot).
 pub fn move_offscreen(hwnd: isize) {

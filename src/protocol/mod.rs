@@ -129,7 +129,7 @@ pub struct DeviceInfo {
     pub supports_report_rate: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct KeyHe {
     pub mode: u8,
     pub rapid_trigger: bool,
@@ -143,7 +143,7 @@ pub struct KeyHe {
     pub snap_partner: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Lighting {
     pub effect: u8,
     /// 0..=4, higher is faster.
@@ -292,6 +292,11 @@ impl KeyboardClient {
 
     pub fn get_profile(&mut self) -> Result<u8> {
         Ok(self.query(&[cmd::GET_PROFILE])?[1])
+    }
+
+    /// Drops the cached key settings, after writes that went around them.
+    pub fn forget_key_settings(&mut self) {
+        self.key_settings_cache = None;
     }
 
     pub fn set_profile(&mut self, profile: u8) -> Result<()> {
@@ -478,11 +483,12 @@ impl KeyboardClient {
         }
         // Jobs may have been queued before earlier writes completed. Diff against
         // the last successful write, not the snapshot from when the UI queued it.
-        if self.key_settings_cache.is_none() {
-            self.get_key_settings()?;
-        }
-        let frames =
-            key_settings_frames(self.key_settings_cache.as_deref().unwrap(), next, self.info);
+        let cached = match self.key_settings_cache.take() {
+            Some(c) => c,
+            None => self.get_key_settings()?,
+        };
+        let frames = key_settings_frames(&cached, next, self.info);
+        self.key_settings_cache = Some(cached);
         if frames.is_empty() {
             return Ok(());
         }
@@ -493,10 +499,10 @@ impl KeyboardClient {
 
     /// Change one key's mode (keeping its Rapid Trigger flag) on top of what the keyboard holds.
     pub fn set_key_mode(&mut self, index: usize, mode: u8) -> Result<()> {
-        if self.key_settings_cache.is_none() {
-            self.get_key_settings()?;
-        }
-        let prev = self.key_settings_cache.clone().unwrap();
+        let prev = match self.key_settings_cache.clone() {
+            Some(c) => c,
+            None => self.get_key_settings()?,
+        };
         let mut next = prev.clone();
         let Some(k) = next.get_mut(index) else {
             bail!("No key {index}");
@@ -762,6 +768,9 @@ pub enum VendorEvent {
     /// The keyboard finished applying an on-board change: re-read state
     /// (fw 3.09 reports profile switches only this way).
     Sync,
+    /// Reading the notify collection started failing: the keyboard may have been unplugged.
+    /// Sent by the stream reader, never parsed from a report.
+    Lost,
 }
 
 pub fn parse_vendor_report(buf: &[u8]) -> Option<VendorEvent> {

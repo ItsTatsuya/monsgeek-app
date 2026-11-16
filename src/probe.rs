@@ -113,8 +113,8 @@ pub fn probe_stream(seconds: u64) -> Result<()> {
         std::thread::sleep(Duration::from_millis(20));
     }
     let result = kb.set_travel_stream(false);
-    let count = *stream.count.lock().unwrap();
-    let peak = stream.peaks.lock().unwrap().clone();
+    let count = *crate::protocol::hid::lock(&stream.count);
+    let peak = crate::protocol::hid::lock(&stream.peaks).clone();
     drop(stream);
     result?;
     println!(

@@ -1,7 +1,9 @@
-//! Colour pickers (GPUI Kit `ColorPicker`) for the effect colour and the per-key brush.
+//! Window-owned kit state: the colour pickers (effect colour, per-key brush) and the text
+//! inputs (key search, macro text, app rules, profile names).
 
 use super::AppView;
 use gpui::component::color_picker::{ColorPickerEvent, ColorPickerState};
+use gpui::component::input::{InputEvent, InputState};
 use gpui::{AppContext as _, Context, Entity, Hsla, Rgba, Window};
 
 pub struct Pickers {
@@ -9,6 +11,14 @@ pub struct Pickers {
     pub effect: Entity<ColorPickerState>,
     /// Lighting › Per-key colours › brush.
     pub brush: Entity<ColorPickerState>,
+    /// Remap and Advanced › key search.
+    pub search: Entity<InputState>,
+    /// Macro editor › type text.
+    pub macro_text: Entity<InputState>,
+    /// Automatic profiles › app name.
+    pub rule_exe: Entity<InputState>,
+    /// Settings › Profiles › names.
+    pub profile_names: [Entity<InputState>; 4],
 }
 
 pub fn to_hsla(c: [u8; 3]) -> Hsla {
@@ -48,11 +58,88 @@ impl AppView {
             }
         })
         .detach();
-        self.pickers = Some(Pickers { effect, brush });
+        let input = |placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>| {
+            cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
+        };
+        let search = input("Search keys…", window, cx);
+        let macro_text = input("e.g. gg wp", window, cx);
+        let rule_exe = input("App name, e.g. VALORANT-Win64-Shipping.exe", window, cx);
+        let profile_names = [0, 1, 2, 3].map(|p| {
+            let state = cx.new(|cx| InputState::new(window, cx).placeholder(format!("Profile {}", p + 1)));
+            // The name follows every edit (so a re-render never puts the old one back) and is
+            // saved once typing pauses.
+            cx.subscribe(&state, move |this, state, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    let name = state.read(cx).value().to_string();
+                    this.rename_profile(p, &name, cx);
+                }
+            })
+            .detach();
+            state
+        });
+        cx.subscribe(&search, |this, state, e: &InputEvent, cx| {
+            if matches!(e, InputEvent::Change) {
+                this.features.search = state.read(cx).value().to_string();
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.subscribe(&macro_text, |this, state, e: &InputEvent, cx| match e {
+            InputEvent::Change => {
+                this.features.macro_text = state.read(cx).value().to_string();
+                cx.notify();
+            }
+            InputEvent::PressEnter { .. } => this.add_macro_text(cx),
+            _ => {}
+        })
+        .detach();
+        cx.subscribe(&rule_exe, |this, state, e: &InputEvent, cx| match e {
+            InputEvent::Change => {
+                this.tools.rule_text = state.read(cx).value().to_string();
+                cx.notify();
+            }
+            InputEvent::PressEnter { .. } => {
+                let text = this.tools.rule_text.clone();
+                this.add_rule(&text, cx);
+            }
+            _ => {}
+        })
+        .detach();
+        self.pickers = Some(Pickers { effect, brush, search, macro_text, rule_exe, profile_names });
+    }
+
+    /// Shows text changed by the app (a cleared field, a reconnect) in the inputs. Profile
+    /// names are left alone while being edited.
+    fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(p) = self.pickers.as_ref() else {
+            return;
+        };
+        let mut wanted: Vec<(Entity<InputState>, String, bool)> = vec![
+            (p.search.clone(), self.features.search.clone(), false),
+            (p.macro_text.clone(), self.features.macro_text.clone(), false),
+            (p.rule_exe.clone(), self.tools.rule_text.clone(), false),
+        ];
+        let id = self.device.as_ref().map(|d| d.info.device_id);
+        for (i, state) in p.profile_names.iter().enumerate() {
+            let name = id
+                .and_then(|id| self.config.profile_names.get(&id))
+                .map(|n| n[i].clone())
+                .unwrap_or_default();
+            wanted.push((state.clone(), name, true));
+        }
+        for (state, text, skip_focused) in wanted {
+            if skip_focused && gpui::Focusable::focus_handle(state.read(cx), cx).is_focused(window) {
+                continue;
+            }
+            if state.read(cx).value().as_ref() != text {
+                state.update(cx, |s, cx| s.set_value(text, window, cx));
+            }
+        }
     }
 
     /// Shows colours changed elsewhere (swatches, the keyboard, a profile switch) in the pickers.
     pub fn sync_pickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_inputs(window, cx);
         let Some(p) = self.pickers.as_ref() else {
             return;
         };
@@ -62,7 +149,6 @@ impl AppView {
         ];
         for (picker, color) in wanted {
             let Some(color) = color else { continue };
-            // LEDs have no alpha: an 8-digit hex or the alpha slider snaps back to opaque.
             // LEDs have no alpha: an 8-digit hex or the alpha slider snaps back to opaque.
             let value = picker.read(cx).value();
             if value.map(to_rgb) != Some(color) || value.is_some_and(|v| v.a < 0.999) {

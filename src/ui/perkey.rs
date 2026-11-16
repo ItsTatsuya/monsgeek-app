@@ -59,7 +59,7 @@ impl AppView {
         let toolbar = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(u(8.))
             .child(div().flex_1().text_color(t.muted).child(if loaded {
                 "Click or drag across keys to paint them"
             } else {
@@ -77,38 +77,43 @@ impl AppView {
         let swatch = |h: u32| {
             let c = rgb3(h);
             let active = c == color;
-            div()
-                .id(("pk-sw", h as usize))
-                .size(px(30.))
-                .rounded(px(8.))
-                .bg(rgb(h))
-                .border_2()
-                .border_color(if active { t.text } else { t.border_strong })
-                .cursor_pointer()
+            Button::new(("pk-sw", h as usize))
+                .ghost()
+                .compact()
+                .selected(active)
+                .accessibility_label(format!("Brush colour #{h:06X}"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(p) = this.features.perkey.as_mut() {
                         p.color = c;
                     }
                     cx.notify();
                 }))
+                .child(
+                    div()
+                        .size(u(26.))
+                        .rounded(u(7.))
+                        .bg(rgb(h))
+                        .border_2()
+                        .border_color(if active { t.text } else { t.border_strong }),
+                )
         };
         // Two fixed rows: a wrapping row here throws off the keyboard card's width.
         let swatches = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .child(div().flex().gap(px(8.)).children(STARTER[..5].iter().map(|&h| swatch(h))))
-            .child(div().flex().gap(px(8.)).children(STARTER[5..].iter().map(|&h| swatch(h))));
+            .gap(u(8.))
+            .child(div().flex().gap(u(8.)).children(STARTER[..5].iter().map(|&h| swatch(h))))
+            .child(div().flex().gap(u(8.)).children(STARTER[5..].iter().map(|&h| swatch(h))));
         let brush = div()
             .flex()
             .flex_col()
-            .gap(px(14.))
+            .gap(u(14.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .child(div().size(px(44.)).rounded(px(10.)).bg(rgb(hex(color))).border_1().border_color(t.border_strong))
+                    .gap(u(12.))
+                    .child(div().size(u(44.)).rounded(u(10.)).bg(rgb(hex(color))).border_1().border_color(t.border_strong))
                     // Opens the full picker: palette, HSLA sliders and a hex box to type into.
                     .children(self.pickers.as_ref().map(|p| self.color_picker(&p.brush, "Brush colour", color))),
             )
@@ -139,8 +144,8 @@ impl AppView {
         let actions = div()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .child(div().flex_1().text_color(if dirty { t.warn } else { t.muted }).text_size(px(12.5)).child(
+            .gap(u(8.))
+            .child(div().flex_1().text_color(if dirty { t.warn } else { t.muted }).text_size(u(12.5)).child(
                 if dirty {
                     "Unsaved changes. Switching pictures discards them."
                 } else if showing == Some(picture) {
@@ -151,29 +156,29 @@ impl AppView {
             ))
             .child(
                 self.button("pk-revert", "Revert", Btn::Normal)
-                    .when(!dirty, |b| b.opacity(0.45))
-                    .when(dirty, |b| b.on_click(cx.listener(move |this, _, _, cx| this.load_picture(picture, cx)))),
+                    .disabled(!dirty)
+                    .on_click(cx.listener(move |this, _, _, cx| this.load_picture(picture, cx))),
             )
             .child(
                 self.button("pk-save", "Save and show", Btn::Primary)
-                    .when(!can_save, |b| b.opacity(0.45))
-                    .when(can_save, |b| b.on_click(cx.listener(|this, _, _, cx| this.save_picture(cx)))),
+                    .disabled(!can_save)
+                    .on_click(cx.listener(|this, _, _, cx| this.save_picture(cx))),
             );
 
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(u(16.))
             .children(tabs)
             .child(self.keyboard_card(Some(toolbar.into_any_element()), board))
             .child(
                 div()
                     .flex()
-                    .gap(px(16.))
+                    .gap(u(16.))
                     .items_start()
                     .when(self.narrow(), |d| d.flex_col())
                     .child(
-                        div().flex_1().min_w(px(0.)).when(self.narrow(), |d| d.w_full()).child(self.card(
+                        div().flex_1().min_w(u(0.)).when(self.narrow(), |d| d.w_full()).child(self.card(
                             "Per-key colours",
                             Some("Pick a colour, then click or drag across keys. Saving stores the colours on the keyboard and switches the lighting to them."),
                             pictures,
@@ -182,7 +187,7 @@ impl AppView {
                     )
                     .child(
                         div()
-                            .w(px(340.))
+                            .w(u(340.))
                             .when(self.narrow(), |d| d.w_full())
                             .flex_none()
                             .child(self.card("Brush", None, None, brush)),

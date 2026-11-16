@@ -36,6 +36,30 @@ const MAG_TABLES: [(u8, usize); 12] = [
 pub struct ProfileBackup {
     pub keymap: Vec<u8>,
     pub mag: BTreeMap<u8, Vec<u8>>,
+    /// Key layers 1–3: the extra actions of dynamic-keystroke and mod-tap keys. Empty in
+    /// files made before they were saved; those leave the keyboard's sub-layers alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub_layers: Vec<Vec<u8>>,
+}
+
+/// Reads key layers 1–3 of a profile.
+fn read_sub_layers(kb: &mut KeyboardClient, profile: u8) -> Result<Vec<Vec<u8>>> {
+    (1..crate::protocol::advanced::DKS_ACTIONS as u8)
+        .map(|l| Ok(kb.get_key_matrix(profile, l)?.concat()))
+        .collect()
+}
+
+/// Writes the sub-layer actions that differ. Nothing happens when `target` has none.
+fn write_sub_layers(kb: &mut KeyboardClient, profile: u8, current: &[Vec<u8>], target: &[Vec<u8>]) -> Result<()> {
+    for (l, (have, want)) in current.iter().zip(target).enumerate() {
+        for i in changed_keys(have, want, 4) {
+            if i < MATRIX_KEYS {
+                let a = [want[i * 4], want[i * 4 + 1], want[i * 4 + 2], want[i * 4 + 3]];
+                kb.set_key(profile, l as u8 + 1, i as u8, a)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -96,6 +120,7 @@ pub fn read(kb: &mut KeyboardClient, name: &str, fn_layers: u8, progress: Progre
     let result = (|| -> Result<()> {
         for p in 0..PROFILES as u8 {
             let keymap = kb.get_key_matrix(p, 0)?.concat();
+            let sub_layers = read_sub_layers(kb, p)?;
             step(&format!("Profile {} keymap", p + 1));
             // Magnetism tables only answer for the active profile.
             if kb.get_profile()? != p {
@@ -106,7 +131,7 @@ pub fn read(kb: &mut KeyboardClient, name: &str, fn_layers: u8, progress: Progre
                 mag.insert(sub, read_mag(kb, sub, width)?);
                 step(&format!("Profile {} key settings", p + 1));
             }
-            profiles.push(ProfileBackup { keymap, mag });
+            profiles.push(ProfileBackup { keymap, mag, sub_layers });
         }
         Ok(())
     })();
@@ -179,9 +204,14 @@ pub fn to_json(b: &Backup) -> String {
     serde_json::to_string_pretty(b).unwrap_or_default()
 }
 
-pub fn file_name(b: &Backup) -> String {
+/// The suggested file name for a backup of `device` made today.
+pub fn file_name_for(device: &str) -> String {
+    file_name_at(device, &now_iso())
+}
+
+fn file_name_at(device: &str, created: &str) -> String {
     let mut slug = String::new();
-    for c in b.device.name.to_lowercase().chars() {
+    for c in device.to_lowercase().chars() {
         if c.is_ascii_alphanumeric() {
             slug.push(c);
         } else if !slug.ends_with('-') {
@@ -191,7 +221,7 @@ pub fn file_name(b: &Backup) -> String {
     format!(
         "monsgeek-app-{}-{}.json",
         slug.trim_matches('-'),
-        b.created.get(..10).unwrap_or("backup")
+        created.get(..10).unwrap_or("backup")
     )
 }
 
@@ -341,6 +371,7 @@ pub fn restore(kb: &mut KeyboardClient, current: &Backup, target: &Backup, progr
                 kb.set_key(p as u8, 0, i as u8, [want[i * 4], want[i * 4 + 1], want[i * 4 + 2], want[i * 4 + 3]])?;
             }
         }
+        write_sub_layers(kb, p as u8, &current.profiles[p].sub_layers, &target.profiles[p].sub_layers)?;
         step(&format!("Profile {} keymap", p + 1));
     }
     // Fn layers are stored per OS mode; write them for the mode the keyboard is in now.
@@ -402,6 +433,157 @@ pub fn restore(kb: &mut KeyboardClient, current: &Backup, target: &Backup, progr
 pub fn restore_fresh(kb: &mut KeyboardClient, name: &str, fn_layers: u8, target: &Backup, progress: Progress) -> Result<()> {
     let current = read(kb, name, fn_layers, &mut |d, t, l| progress(d, t, &format!("Re-reading the keyboard · {l}")))?;
     restore(kb, &current, target, &mut |d, t, l| progress(d, t, &format!("Restoring · {l}")))
+}
+
+// ---- single profiles -------------------------------------------------------------------
+
+/// Format id of a one-profile export.
+pub const PROFILE_FORMAT: &str = "monsgeek-profile";
+
+/// One onboard profile (keymap and key settings), as exported to a file.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProfileFile {
+    pub format: String,
+    pub version: u32,
+    pub created: String,
+    pub device: DeviceStamp,
+    /// The profile's name in the app when it was exported.
+    pub name: String,
+    pub profile: ProfileBackup,
+    /// The profile's lighting (GET_LEDPARAM bytes 1–7); absent in files without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led: Option<Vec<u8>>,
+}
+
+/// Runs `f` with `profile` active, then switches back to the profile that was active before
+/// (also when `f` fails). Key settings only answer for the active profile.
+fn with_profile<T>(kb: &mut KeyboardClient, profile: u8, f: impl FnOnce(&mut KeyboardClient) -> Result<T>) -> Result<T> {
+    let active = kb.get_profile()?;
+    if active != profile {
+        kb.set_profile(profile)?;
+    }
+    let result = f(kb);
+    if kb.get_profile()? != active {
+        kb.set_profile(active)?;
+    }
+    result
+}
+
+/// Reads one profile's keymap and key settings.
+pub fn read_profile(kb: &mut KeyboardClient, profile: u8) -> Result<ProfileBackup> {
+    let keymap = kb.get_key_matrix(profile, 0)?.concat();
+    let sub_layers = read_sub_layers(kb, profile)?;
+    let table_list: Vec<_> = tables(kb).collect();
+    let mag = with_profile(kb, profile, |kb| {
+        let mut mag = BTreeMap::new();
+        for &(sub, width) in &table_list {
+            mag.insert(sub, read_mag(kb, sub, width)?);
+        }
+        Ok(mag)
+    })?;
+    Ok(ProfileBackup { keymap, mag, sub_layers })
+}
+
+/// Writes `target` into `profile`, sending only what differs from `current` (that profile as
+/// the keyboard holds it now).
+pub fn write_profile(kb: &mut KeyboardClient, current: &ProfileBackup, target: &ProfileBackup, profile: u8) -> Result<()> {
+    let want = &target.keymap;
+    for i in changed_keys(&current.keymap, want, 4) {
+        if i < MATRIX_KEYS {
+            kb.set_key(profile, 0, i as u8, [want[i * 4], want[i * 4 + 1], want[i * 4 + 2], want[i * 4 + 3]])?;
+        }
+    }
+    write_sub_layers(kb, profile, &current.sub_layers, &target.sub_layers)?;
+    let frames = mag_frames(kb, &current.mag, &target.mag);
+    if frames.is_empty() {
+        return Ok(());
+    }
+    with_profile(kb, profile, |kb| kb.write(&frames, Checksum::Bit7, Duration::from_millis(300)))?;
+    // Writes bypass the key-settings cache, which only tracks the active profile.
+    kb.forget_key_settings();
+    Ok(())
+}
+
+/// A profile's lighting, raw so preset colour codes survive.
+pub fn read_profile_led(kb: &mut KeyboardClient, profile: u8) -> Result<Vec<u8>> {
+    with_profile(kb, profile, |kb| Ok(kb.query(&[cmd::GET_LEDPARAM])?[1..8].to_vec()))
+}
+
+pub fn write_profile_led(kb: &mut KeyboardClient, profile: u8, led: &[u8]) -> Result<()> {
+    if led.len() != 7 {
+        bail!("The profile's lighting is damaged.");
+    }
+    let mut f = vec![cmd::SET_LEDPARAM];
+    f.extend_from_slice(led);
+    with_profile(kb, profile, |kb| kb.write(&[f], Checksum::Bit8, Duration::from_millis(100)))
+}
+
+/// Copies profile `from` onto profile `to`: keymap, key settings and lighting.
+pub fn copy_profile(kb: &mut KeyboardClient, from: u8, to: u8) -> Result<()> {
+    let source = read_profile(kb, from)?;
+    let led = read_profile_led(kb, from)?;
+    let current = read_profile(kb, to)?;
+    write_profile(kb, &current, &source, to)?;
+    write_profile_led(kb, to, &led)
+}
+
+/// Checks that a profile's tables have the sizes the keyboard uses, so a damaged file can't
+/// write a partial table.
+fn check_profile(p: &ProfileBackup) -> Result<()> {
+    if p.keymap.len() != MATRIX_KEYS * 4 || p.sub_layers.iter().any(|l| l.len() != MATRIX_KEYS * 4) {
+        bail!("The profile's keymap is damaged.");
+    }
+    for (sub, width) in MAG_TABLES {
+        if p.mag.get(&sub).is_some_and(|t| t.len() != MATRIX_KEYS * width) {
+            bail!("The profile's key settings are damaged.");
+        }
+    }
+    Ok(())
+}
+
+pub fn profile_file(device: DeviceStamp, name: &str, profile: ProfileBackup, led: Vec<u8>) -> ProfileFile {
+    ProfileFile {
+        format: PROFILE_FORMAT.into(),
+        version: VERSION,
+        created: now_iso(),
+        device,
+        name: name.into(),
+        profile,
+        led: Some(led),
+    }
+}
+
+pub fn parse_profile(text: &str) -> Result<ProfileFile> {
+    let v: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| anyhow!("This file is not valid JSON."))?;
+    match v.get("format").and_then(|f| f.as_str()) {
+        Some(PROFILE_FORMAT) => {}
+        Some(FORMAT) => bail!("This is a whole-keyboard backup. Restore it from Backup & restore."),
+        _ => bail!("This file is not a Monsgeek App profile."),
+    }
+    if v.get("version").and_then(|f| f.as_u64()).unwrap_or(0) > VERSION as u64 {
+        bail!("This profile was exported by a newer version of the app.");
+    }
+    let f: ProfileFile =
+        serde_json::from_value(v).map_err(|e| anyhow!("This profile file is damaged: {e}"))?;
+    check_profile(&f.profile)?;
+    if f.led.as_ref().is_some_and(|l| l.len() != 7) {
+        bail!("The profile's lighting is damaged.");
+    }
+    Ok(f)
+}
+
+pub fn profile_file_name(f: &ProfileFile) -> String {
+    let mut slug = String::new();
+    for c in f.name.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    format!("{}-profile.json", if slug.is_empty() { "monsgeek" } else { slug })
 }
 
 /// UTC timestamp in the ISO 8601 form JavaScript's toISOString() writes.
@@ -491,6 +673,46 @@ mod tests {
         assert_eq!(kb.get_key_matrix(0, 0).unwrap()[9], saved.profiles[0].keymap[36..40]);
         let after = read(&mut kb, "FUN60 PRO", 2, &mut |_, _, _| {}).unwrap();
         assert!(plan(&after, &saved).is_empty());
+    }
+
+    #[test]
+    fn copying_a_profile_keeps_dynamic_keystroke_actions() {
+        use crate::protocol::advanced::DksConfig;
+        let mut kb = client();
+        let mut dks = DksConfig::fresh([0, 0, 0x04, 0]);
+        dks.actions = [[0, 0, 0x04, 0], [0, 0, 0x05, 0], [0, 0, 0x06, 0], [0, 0, 0x07, 0]];
+        kb.write_dks(0, 20, &dks).unwrap();
+        kb.set_key_mode(20, crate::protocol::mode::DKS).unwrap();
+        copy_profile(&mut kb, 0, 1).unwrap();
+        assert_eq!(kb.read_dks(1, 20).unwrap().actions, dks.actions);
+    }
+
+    #[test]
+    fn copying_a_profile_moves_its_keymap_and_key_settings() {
+        let mut kb = client();
+        kb.set_key(0, 0, 9, [0, 0, 0x29, 0]).unwrap();
+        let before = kb.get_key_settings().unwrap();
+        let mut keys = before.clone();
+        keys[14].actuation = 0.5;
+        kb.apply_key_settings(&before, &keys).unwrap();
+        copy_profile(&mut kb, 0, 2).unwrap();
+        assert_eq!(kb.get_key_matrix(2, 0).unwrap()[9], [0, 0, 0x29, 0]);
+        assert_eq!(kb.get_profile().unwrap(), 0, "the active profile is put back");
+        kb.set_profile(2).unwrap();
+        assert!((kb.get_key_settings().unwrap()[14].actuation - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn profile_files_round_trip_and_reject_backups() {
+        let mut kb = client();
+        let p = read_profile(&mut kb, 1).unwrap();
+        let stamp = DeviceStamp { id: 2304, name: "FUN60 PRO".into(), firmware: 0x400 };
+        let file = profile_file(stamp, "Gaming", p, vec![1, 2, 3, 4, 0, 0, 0]);
+        let json = serde_json::to_string(&file).unwrap();
+        assert_eq!(parse_profile(&json).unwrap().name, "Gaming");
+        let backup = read(&mut kb, "FUN60 PRO", 2, &mut |_, _, _| {}).unwrap();
+        assert!(parse_profile(&to_json(&backup)).is_err());
+        assert_eq!(profile_file_name(&file), "gaming-profile.json");
     }
 
     #[test]

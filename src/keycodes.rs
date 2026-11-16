@@ -322,11 +322,11 @@ pub fn palette() -> Vec<PaletteGroup> {
             name: "Media",
             keys: consumer
                 .iter()
-                .map(|&u| {
-                    (
-                        consumer_label(u).unwrap().to_string(),
+                .filter_map(|&u| {
+                    Some((
+                        consumer_label(u)?.to_string(),
                         [3, 0, u as u8, (u >> 8) as u8],
-                    )
+                    ))
                 })
                 .collect(),
         },

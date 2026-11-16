@@ -44,6 +44,7 @@ pub fn all() -> &'static [DeviceDef] {
     static DEVICES: OnceLock<Vec<DeviceDef>> = OnceLock::new();
     DEVICES.get_or_init(|| {
         serde_json::from_str::<Vec<DeviceDef>>(RAW)
+            // Embedded at build time and parsed by the tests, so this can't fail at run time.
             .expect("monsgeek.json")
             .into_iter()
             .filter(|d| !d.matrix.is_empty())
@@ -273,7 +274,7 @@ pub fn build_layout(base: &[KeyAction]) -> Layout {
         let nav_x = main_width + 0.25;
         let num_x = nav_x + 3.25;
         for (i, a) in present.iter().filter(|(_, a)| is_nav(a)) {
-            let (r, c) = nav_pos(hid_of(a)).unwrap();
+            let Some((r, c)) = nav_pos(hid_of(a)) else { continue };
             keys.push(VisualKey {
                 index: *i,
                 base: *a,
@@ -284,7 +285,7 @@ pub fn build_layout(base: &[KeyAction]) -> Layout {
             });
         }
         for (i, a) in present.iter().filter(|(_, a)| is_num(a)) {
-            let (r, c, w, h) = num_pos(hid_of(a)).unwrap();
+            let Some((r, c, w, h)) = num_pos(hid_of(a)) else { continue };
             keys.push(VisualKey {
                 index: *i,
                 base: *a,

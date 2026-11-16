@@ -6,7 +6,9 @@ use crate::app::CAL_DONE_AT;
 impl AppView {
     pub(super) fn calibration(&mut self, cx: &mut Cx) -> Div {
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let steps_per_mm = d.info.steps_per_mm;
         let step = self.features.cal.step;
         let peaks = self.features.cal.peaks.clone();
@@ -71,17 +73,17 @@ impl AppView {
         let bullet = |text: String| {
             div()
                 .flex()
-                .gap(px(8.))
+                .gap(u(8.))
                 .child(div().text_color(t.muted).child("•"))
-                .child(div().flex_1().text_size(px(13.)).child(text))
+                .child(div().flex_1().text_size(u(13.)).child(text))
         };
         let warning = |title: String, items: Vec<String>| {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
-                .p(px(14.))
-                .rounded(px(10.))
+                .gap(u(8.))
+                .p(u(14.))
+                .rounded(u(10.))
                 .border_1()
                 .border_color(t.warn.opacity(0.5))
                 .bg(t.warn.opacity(0.06))
@@ -93,7 +95,7 @@ impl AppView {
             CalStep::Idle => div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(u(12.))
                 .children(
                     [
                         "Keep the keyboard plugged in with the cable, and take your hands off it.",
@@ -106,10 +108,10 @@ impl AppView {
                     .map(|(i, s)| {
                         div()
                             .flex()
-                            .gap(px(8.))
+                            .gap(u(8.))
                             .text_color(t.text_2)
-                            .text_size(px(13.))
-                            .child(div().w(px(16.)).text_color(t.muted).child(format!("{}.", i + 1)))
+                            .text_size(u(13.))
+                            .child(div().w(u(16.)).text_color(t.muted).child(format!("{}.", i + 1)))
                             .child(*s)
                     }),
                 )
@@ -130,14 +132,14 @@ impl AppView {
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(8.))
+                    .gap(u(8.))
                     .child(self.button("cal-back", "Back", Btn::Normal).on_click(cx.listener(|this, _, _, cx| this.set_cal_step(CalStep::Idle, cx))))
                     .child(self.button("cal-go", "I understand, start", Btn::Primary).on_click(cx.listener(|this, _, _, cx| this.start_calibration(cx)))),
             ),
             CalStep::Rest(_) | CalStep::Starting => div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(u(12.))
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(match step {
                     CalStep::Rest(left) => format!("Hands off the keyboard… {left}"),
                     _ => "Starting bottom calibration…".to_string(),
@@ -150,24 +152,24 @@ impl AppView {
             CalStep::Bottom | CalStep::Saving => div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(u(12.))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(14.))
+                        .gap(u(14.))
                         .child(
                             div()
                                 .flex()
                                 .items_end()
-                                .gap(px(6.))
-                                .child(div().font_family(NUM_FONT).text_size(px(22.)).child(finished.to_string()))
-                                .child(div().text_color(t.muted).pb(px(3.)).child(format!("/ {total} keys"))),
+                                .gap(u(6.))
+                                .child(div().font_family(NUM_FONT).text_size(u(22.)).child(finished.to_string()))
+                                .child(div().text_color(t.muted).pb(u(3.)).child(format!("/ {total} keys"))),
                         )
                         .child(
                             div()
                                 .flex_1()
-                                .h(px(8.))
+                                .h(u(8.))
                                 .rounded_full()
                                 .bg(t.track)
                                 .child(div().h_full().rounded_full().bg(t.ok).w(relative(finished as f32 / total.max(1) as f32))),
@@ -177,8 +179,8 @@ impl AppView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
-                        .child(div().flex_1().text_color(t.muted).text_size(px(12.5)).child(if missing == 0 {
+                        .gap(u(8.))
+                        .child(div().flex_1().text_color(t.muted).text_size(u(12.5)).child(if missing == 0 {
                             "All keys reached full depth.".to_string()
                         } else if !shallow.is_empty() {
                             format!("{} not pressed deep enough, {} not pressed yet.", shallow.len(), untouched.len())
@@ -187,7 +189,8 @@ impl AppView {
                         }))
                         .child(
                             self.button("cal-save", if step == CalStep::Saving { "Saving…" } else { "Save calibration" }, Btn::Primary)
-                                .when(step == CalStep::Saving, |b| b.opacity(0.45))
+                                .loading(step == CalStep::Saving)
+                                .disabled(step != CalStep::Bottom)
                                 .when(step == CalStep::Bottom, |b| {
                                     b.on_click(cx.listener(move |this, _, _, cx| {
                                         if missing > 0 {
@@ -219,7 +222,7 @@ impl AppView {
                     div()
                         .flex()
                         .justify_end()
-                        .gap(px(8.))
+                        .gap(u(8.))
                         .child(self.button("cal-keep", "Keep calibrating", Btn::Primary).on_click(cx.listener(|this, _, _, cx| this.set_cal_step(CalStep::Bottom, cx))))
                         .child(self.button("cal-anyway", "Save anyway", Btn::Normal).on_click(cx.listener(|this, _, _, cx| this.save_calibration(cx)))),
                 )
@@ -227,7 +230,7 @@ impl AppView {
             CalStep::Done => div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(u(12.))
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
@@ -244,7 +247,7 @@ impl AppView {
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(u(16.))
             .child(div().text_color(t.muted).child(hint))
             .child(self.keyboard_card(None, board))
             .child(self.card(

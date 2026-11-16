@@ -27,12 +27,12 @@ impl AppView {
         let t = self.theme;
         div()
             .flex_none()
-            .px(px(6.))
-            .py(px(1.))
-            .rounded(px(4.))
+            .px(u(6.))
+            .py(u(1.))
+            .rounded(u(4.))
             .bg(t.accent_soft)
             .text_color(t.accent_strong)
-            .text_size(px(10.5))
+            .text_size(u(10.5))
             .font_weight(FontWeight(650.))
             .child(text.into())
     }
@@ -41,21 +41,23 @@ impl AppView {
         let t = self.theme;
         div()
             .flex_none()
-            .px(px(7.))
-            .py(px(2.))
-            .rounded(px(5.))
+            .px(u(7.))
+            .py(u(2.))
+            .rounded(u(5.))
             .bg(t.surface_2)
             .border_1()
             .border_color(t.border_strong)
             .font_family(NUM_FONT)
-            .text_size(px(12.))
+            .text_size(u(12.))
             .child(text.into())
     }
 
     pub(super) fn advanced(&mut self, cx: &mut Cx) -> Div {
         self.sync_adv_editor(cx);
         let t = self.theme;
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let keys = d.keys.clone();
         let names = d.defaults.clone();
         let sel = self.selection.clone();
@@ -74,7 +76,7 @@ impl AppView {
         let toolbar = div()
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(u(6.))
             .child(div().flex_1().text_color(t.muted).child(if count == 0 {
                 "Click or drag across keys to select them".to_string()
             } else {
@@ -148,50 +150,51 @@ impl AppView {
             .into_iter()
             .enumerate()
             .map(|(i, (tag, title, desc, enabled, act))| {
-                div()
-                    .id(("mode-card", i))
+                Button::new(("mode-card", i))
+                    .outline()
                     .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .p(px(14.))
-                    .rounded(px(10.))
-                    .bg(t.surface)
-                    .border_1()
-                    .border_color(t.border)
-                    .when(!enabled, |el| el.opacity(0.45))
-                    .when(enabled, |el| {
-                        el.cursor_pointer()
-                            .hover(|s| s.border_color(t.accent))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                act(this, cx);
-                                cx.notify();
-                            }))
-                    })
+                    .min_w(u(0.))
+                    .h_auto()
+                    .p(u(14.))
+                    .disabled(!enabled)
+                    .accessibility_label(title)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        act(this, cx);
+                        cx.notify();
+                    }))
                     .child(
                         div()
+                            .w_full()
                             .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .when(!tag.is_empty(), |el| el.child(self.pill(tag)))
-                            .child(title),
+                            .flex_col()
+                            .items_start()
+                            .gap(u(6.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(u(8.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .when(!tag.is_empty(), |el| el.child(self.pill(tag)))
+                                    .child(title),
+                            )
+                            .child(div().text_color(t.muted).text_size(u(12.5)).whitespace_normal().child(desc)),
                     )
-                    .child(div().text_color(t.muted).text_size(px(12.5)).child(desc))
             })
             .collect();
-        let mut mode_cards = div().flex().flex_col().gap(px(12.));
+        let mut mode_cards = div().flex().flex_col().gap(u(12.));
         while !tiles.is_empty() {
             let rest = tiles.split_off(columns.min(tiles.len()));
-            mode_cards = mode_cards.child(div().flex().gap(px(12.)).children(tiles));
+            mode_cards = mode_cards.child(div().flex().gap(u(12.)).children(tiles));
             tiles = rest;
         }
 
         let editor = self.adv_editor_card(&names, cx);
 
         // Active advanced keys, Snap Tap pairs listed once.
-        let d = self.device.as_ref().unwrap();
+        let Some(d) = self.device.as_ref() else {
+            return div();
+        };
         let active: Vec<usize> = d
             .layout
             .keys
@@ -209,10 +212,10 @@ impl AppView {
                 let mut row = div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(10.))
-                    .py(px(6.))
-                    .rounded(px(8.))
+                    .gap(u(10.))
+                    .px(u(10.))
+                    .py(u(6.))
+                    .rounded(u(8.))
                     .bg(t.surface_2)
                     .child(self.pill(tag))
                     .child(self.kbd(action_label(&names[i])));
@@ -226,7 +229,7 @@ impl AppView {
                         el.child(
                             div()
                                 .text_color(t.muted)
-                                .text_size(px(12.))
+                                .text_size(u(12.))
                                 .child(format!("mode {m} · set by another app")),
                         )
                     });
@@ -252,13 +255,13 @@ impl AppView {
             "Active advanced keys",
             active.is_empty().then_some("No keys use an advanced mode in this profile."),
             None,
-            div().flex().flex_col().gap(px(6.)).children(rows),
+            div().flex().flex_col().gap(u(6.)).children(rows),
         );
 
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(u(16.))
             .child(self.keyboard_card(Some(toolbar.into_any_element()), board))
             .child(mode_cards)
             .children(editor)
@@ -294,8 +297,8 @@ impl AppView {
                 ];
                 let head = div()
                     .flex()
-                    .gap(px(8.))
-                    .child(div().w(px(120.)).flex_none())
+                    .gap(u(8.))
+                    .child(div().w(u(120.)).flex_none())
                     .children(DKS_PHASES.iter().enumerate().map(|(i, p)| {
                         div()
                             .flex_1()
@@ -305,13 +308,13 @@ impl AppView {
                             .child(
                                 div()
                                     .flex()
-                                    .gap(px(4.))
+                                    .gap(u(4.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(12.5))
+                                    .text_size(u(12.5))
                                     .child(div().text_color(if i < 2 { t.accent_strong } else { t.rt }).child(if i < 2 { "↓" } else { "↑" }))
                                     .child(*p),
                             )
-                            .child(div().text_color(t.muted).text_size(px(11.5)).child(depth[i].clone()))
+                            .child(div().text_color(t.muted).text_size(u(11.5)).child(depth[i].clone()))
                     }));
                 let rows: Vec<_> = (0..4).map(|r| {
                     let action = cfg.actions[r];
@@ -321,41 +324,40 @@ impl AppView {
                     let track = div()
                         .flex_1()
                         .relative()
-                        .h(px(36.))
-                        .rounded(px(8.))
+                        .h(u(36.))
+                        .rounded(u(8.))
                         .bg(t.surface_2)
                         .border_1()
                         .border_color(t.border)
-                        .child(div().absolute().left(px(8.)).right(px(8.)).top(px(17.)).h(px(1.)).bg(t.border_strong))
+                        .child(div().absolute().left(u(8.)).right(u(8.)).top(u(17.)).h(u(1.)).bg(t.border_strong))
                         .children(segs.iter().map(|s| {
                             let x = |p: usize| relative(0.125 + p as f32 * 0.25);
                             match s.to {
                                 None => div()
                                     .absolute()
                                     .left(x(s.from))
-                                    .ml(px(-7.))
-                                    .top(px(10.))
-                                    .size(px(14.))
+                                    .ml(u(-7.))
+                                    .top(u(10.))
+                                    .size(u(14.))
                                     .rounded_full()
                                     .bg(t.accent),
                                 Some(to) => div()
                                     .absolute()
                                     .left(x(s.from))
                                     .w(relative((to - s.from) as f32 * 0.25))
-                                    .ml(px(-7.))
-                                    .top(px(10.))
-                                    .h(px(14.))
+                                    .ml(u(-7.))
+                                    .top(u(10.))
+                                    .h(u(14.))
                                     .rounded_full()
                                     .bg(t.rt),
                             }
                         }))
                         .child(div().absolute().inset_0().flex().children((0..4).map(|p| {
-                            div()
-                                .id(("dks-cell", r * 4 + p))
+                            Button::new(("dks-cell", r * 4 + p))
+                                .ghost()
                                 .flex_1()
                                 .h_full()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(t.hover.opacity(0.4)))
+                                .accessibility_label(format!("Row {} phase {}", r + 1, p + 1))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if let Some(AdvEditor::Dks { cfg: Some(c), .. }) = this.features.adv.as_mut() {
                                         c.cells[r] = cycle_cell(c.cells[r], p);
@@ -366,23 +368,14 @@ impl AppView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(u(8.))
                         .child(
-                            div()
-                                .id(("dks-slot", r))
-                                .w(px(120.))
+                            Button::new(("dks-slot", r))
+                                .outline()
+                                .w(u(120.))
                                 .flex_none()
-                                .h(px(36.))
-                                .px(px(10.))
-                                .flex()
-                                .items_center()
-                                .rounded(px(8.))
-                                .border_1()
-                                .border_color(if selected { t.accent } else { t.border })
-                                .bg(if selected { t.accent_soft } else { t.surface_2 })
-                                .cursor_pointer()
-                                .whitespace_nowrap()
-                                .overflow_hidden()
+                                .selected(selected)
+                                .when(selected, |b| b.border_color(t.text_2))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if let Some(AdvEditor::Dks { row, .. }) = this.features.adv.as_mut() {
                                         *row = r;
@@ -393,7 +386,8 @@ impl AppView {
                                     div().text_color(t.muted).child("+ key")
                                 } else {
                                     div().child(action_label(&action))
-                                }),
+                                })
+                                .child(div().flex_1()),
                         )
                         .child(track)
                 }).collect();
@@ -405,7 +399,7 @@ impl AppView {
                 let body = div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
+                    .gap(u(16.))
                     .child(self.slider(
                         "Trigger point",
                         Some(cfg.travel),
@@ -419,8 +413,8 @@ impl AppView {
                         false,
                         cx,
                     ))
-                    .child(div().flex().flex_col().gap(px(8.)).child(head).children(rows))
-                    .child(div().text_color(t.muted).text_size(px(12.5)).child(
+                    .child(div().flex().flex_col().gap(u(8.)).child(head).children(rows))
+                    .child(div().text_color(t.muted).text_size(u(12.5)).child(
                         "Click a phase to add a tap there; click again to hold it until the next phase, again to hold longer, and once more to remove it.",
                     ))
                     .when(unused, |el| el.child(self.banner("A slot has a key but no phases, so it will never fire.", t.warn)))
@@ -428,8 +422,8 @@ impl AppView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .child(div().flex_1().text_color(t.muted).text_size(px(12.5)).child(format!("Picking a key for slot {}", row + 1)))
+                            .gap(u(8.))
+                            .child(div().flex_1().text_color(t.muted).text_size(u(12.5)).child(format!("Picking a key for slot {}", row + 1)))
                             .child(close)
                             .child(self.button("adv-save", save_label, Btn::Primary).on_click(cx.listener(|this, _, _, cx| this.save_adv(cx)))),
                     )
@@ -442,32 +436,35 @@ impl AppView {
                 let (cfg, hold) = (*cfg, *hold);
                 let slot = |which_hold: bool, title: &'static str, hint: String, a: KeyAction| {
                     let selected = which_hold == hold;
-                    div()
-                        .id(if which_hold { "mt-hold" } else { "mt-tap" })
-                        .w(px(180.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .p(px(12.))
-                        .rounded(px(10.))
-                        .border_1()
-                        .border_color(if selected { t.accent } else { t.border })
-                        .bg(if selected { t.accent_soft } else { t.surface_2 })
-                        .cursor_pointer()
+                    Button::new(if which_hold { "mt-hold" } else { "mt-tap" })
+                        .outline()
+                        .w(u(180.))
+                        .h_auto()
+                        .p(u(12.))
+                        .selected(selected)
+                        .when(selected, |b| b.border_color(t.text_2))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(AdvEditor::ModTap { hold, .. }) = this.features.adv.as_mut() {
                                 *hold = which_hold;
                             }
                             cx.notify();
                         }))
-                        .child(div().text_color(t.muted).text_size(px(12.)).child(title))
                         .child(
                             div()
-                                .text_size(px(18.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(if is_empty(&a) { "+ key".to_string() } else { action_label(&a) }),
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .items_start()
+                                .gap(u(4.))
+                                .child(div().text_color(t.muted).text_size(u(12.)).child(title))
+                                .child(
+                                    div()
+                                        .text_size(u(18.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(if is_empty(&a) { "+ key".to_string() } else { action_label(&a) }),
+                                )
+                                .child(div().text_color(t.muted).text_size(u(11.5)).whitespace_normal().child(hint)),
                         )
-                        .child(div().text_color(t.muted).text_size(px(11.5)).child(hint))
                 };
                 let can_save = !is_empty(&cfg.tap) && !is_empty(&cfg.hold);
                 let save_label = if mode_now == mode::MOD_TAP {
@@ -478,12 +475,12 @@ impl AppView {
                 let body = div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
+                    .gap(u(16.))
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
-                            .gap(px(12.))
+                            .gap(u(12.))
                             .child(slot(false, "Tap", format!("released within {} ms", cfg.time), cfg.tap))
                             .child(slot(true, "Hold", format!("held longer than {} ms", cfg.time), cfg.hold)),
                     )
@@ -504,16 +501,16 @@ impl AppView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .child(div().flex_1().text_color(t.muted).text_size(px(12.5)).child(format!(
+                            .gap(u(8.))
+                            .child(div().flex_1().text_color(t.muted).text_size(u(12.5)).child(format!(
                                 "Picking the {} key",
                                 if hold { "hold" } else { "tap" }
                             )))
                             .child(close)
                             .child(
                                 self.button("adv-save", save_label, Btn::Primary)
-                                    .when(!can_save, |b| b.opacity(0.45))
-                                    .when(can_save, |b| b.on_click(cx.listener(|this, _, _, cx| this.save_adv(cx)))),
+                                    .disabled(!can_save)
+                                    .on_click(cx.listener(|this, _, _, cx| this.save_adv(cx))),
                             ),
                     )
                     .child(self.action_picker(Some(if hold { cfg.hold } else { cfg.tap }), cx));
@@ -528,12 +525,12 @@ impl AppView {
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(u(12.))
             .child(
                 div()
                     .flex()
-                    .gap(px(8.))
-                    .child(self.text_field(Field::Search, &self.features.search, "Search keys…", 200., cx))
+                    .gap(u(8.))
+                    .children(self.search_input(200.))
                     .child(
                         self.button("clear-slot", "Clear slot", Btn::Ghost)
                             .on_click(cx.listener(|this, _, _, cx| this.pick_adv_action([0, 0, 0, 0], cx))),
