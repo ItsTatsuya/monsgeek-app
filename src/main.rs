@@ -89,10 +89,14 @@ fn main() {
             };
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // The app draws its own title bar (GPUI Kit `TitleBar`), so the sidebar and page
+                // run up to the top edge instead of sitting under a separate system strip.
                 titlebar: Some(TitlebarOptions {
                     title: Some(APP_NAME.into()),
-                    ..Default::default()
+                    appears_transparent: true,
+                    traffic_light_position: None,
                 }),
+                app_owns_titlebar_drag: true,
                 window_background: WindowBackgroundAppearance::Opaque,
                 window_min_size: Some(size(px(width.min(900.)), px(height.min(600.)))),
                 focus: !shot && !tray,

@@ -18,8 +18,10 @@ pub struct AutoProfiles {
     /// Profile for apps without a rule; None leaves the profile alone.
     pub default_profile: Option<u8>,
     pub rules: Vec<AutoRule>,
-    /// Keep running in the tray when the window is closed.
-    pub tray: bool,
+    /// The old per-feature "keep running in the tray" switch, read from older config files
+    /// and folded into [`Config::run_in_tray`] on load; never written back.
+    #[serde(rename = "tray", skip_serializing)]
+    pub legacy_tray: Option<bool>,
 }
 
 impl Default for AutoProfiles {
@@ -28,7 +30,7 @@ impl Default for AutoProfiles {
             enabled: false,
             default_profile: None,
             rules: Vec::new(),
-            tray: true,
+            legacy_tray: None,
         }
     }
 }
@@ -52,8 +54,10 @@ pub struct Config {
     pub layer_looks: BTreeMap<u32, LayerLooks>,
     /// Names the user gave the four onboard profiles, by device id. Empty means "Profile N".
     pub profile_names: BTreeMap<u32, [String; 4]>,
-    /// Start hidden in the tray (used when the app opens at sign-in).
-    pub start_in_tray: bool,
+    /// Keep running in the tray: closing the window hides it to the notification area, and
+    /// opening at sign-in starts there. (Saved as `start_in_tray` by earlier versions.)
+    #[serde(alias = "start_in_tray")]
+    pub run_in_tray: bool,
     /// Interface size: the base font size in pixels (None is the default size).
     pub ui_scale: Option<f32>,
     pub appearance: Appearance,
@@ -90,8 +94,8 @@ impl Config {
             return (Self::default(), None);
         };
         match std::fs::read_to_string(&p) {
-            Ok(text) => match serde_json::from_str(&text) {
-                Ok(c) => (c, None),
+            Ok(text) => match serde_json::from_str::<Config>(&text) {
+                Ok(c) => (c.migrated(), None),
                 Err(e) => {
                     let aside = p.with_extension("json.bad");
                     let moved = std::fs::rename(&p, &aside).is_ok();
@@ -132,6 +136,16 @@ impl Config {
         std::fs::rename(&tmp, &p)
     }
 
+    /// Folds settings from older versions into their current form.
+    fn migrated(mut self) -> Self {
+        // Automatic profiles used to have their own tray switch (on by default). Someone who
+        // had automatic profiles running in the tray keeps that behaviour.
+        if let Some(tray) = self.auto_profiles.legacy_tray.take() {
+            self.run_in_tray |= tray && self.auto_profiles.enabled;
+        }
+        self
+    }
+
     /// The base font size in pixels.
     pub fn font_size(&self) -> f32 {
         self.ui_scale
@@ -170,6 +184,21 @@ mod tests {
         assert_eq!(a.target("explorer.exe"), Some(0));
         // Older config files (with a theme, without the new fields) still load.
         let old: Config = serde_json::from_str(r#"{"theme":"Light","blur":true}"#).unwrap();
-        assert!(!old.auto_profiles.enabled && old.auto_profiles.tray);
+        assert!(!old.auto_profiles.enabled && !old.run_in_tray);
+    }
+
+    #[test]
+    fn the_two_old_tray_switches_become_one() {
+        let load = |json: &str| serde_json::from_str::<Config>(json).unwrap().migrated();
+        // Automatic profiles running in the tray keep running there.
+        assert!(load(r#"{"auto_profiles":{"enabled":true,"tray":true}}"#).run_in_tray);
+        // Its tray switch alone, with automatic profiles off, doesn't turn the tray on.
+        assert!(!load(r#"{"auto_profiles":{"enabled":false,"tray":true}}"#).run_in_tray);
+        assert!(!load(r#"{"auto_profiles":{"enabled":true,"tray":false}}"#).run_in_tray);
+        // The general switch carries over under its old name.
+        assert!(load(r#"{"start_in_tray":true}"#).run_in_tray);
+        // The old field isn't written back.
+        let saved = serde_json::to_string(&load(r#"{"auto_profiles":{"enabled":true,"tray":true}}"#)).unwrap();
+        assert!(!saved.contains("\"tray\"") && saved.contains("run_in_tray"));
     }
 }

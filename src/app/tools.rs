@@ -317,8 +317,9 @@ impl AppView {
     /// Start or stop the foreground watcher and the tray icon to match the settings.
     pub fn sync_auto(&mut self, cx: &mut Context<Self>) {
         let a = &self.config.auto_profiles;
-        // The tray icon serves automatic profiles, and starting hidden at sign-in.
-        let (enabled, tray) = (a.enabled, (a.enabled && a.tray) || self.config.start_in_tray);
+        // One switch for the tray: it keeps automatic profiles and per-layer lighting working
+        // with the window closed, and is where opening at sign-in starts.
+        let (enabled, tray) = (a.enabled, self.config.run_in_tray);
         if enabled && self.tools.watcher.is_none() {
             let (tx, rx) = async_channel::unbounded();
             self.tools.watcher = Some(ForegroundWatcher::start(tx));

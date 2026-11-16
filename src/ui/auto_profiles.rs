@@ -10,7 +10,7 @@ impl AppView {
         none: bool,
         on: impl Fn(&mut AppView, Option<u8>, &mut Cx) + 'static,
         cx: &mut Cx,
-    ) -> ButtonGroup {
+    ) -> Div {
         let mut options: Vec<(i8, String)> = Vec::new();
         if none {
             options.push((-1, "Don't change".into()));
@@ -62,16 +62,49 @@ impl AppView {
                 .flex()
                 .flex_col()
                 .gap(u(12.))
-                .child(self.setting_row(
-                    "Everything else",
-                    "Profile for apps without a rule.",
-                    self.profile_picker("ap-default", a.default_profile, true, |this, v, cx| this.edit_auto(|a| a.default_profile = v, cx), cx),
-                ))
-                .child(self.setting_row(
-                    "Keep running in the tray",
-                    "Closing the window hides Monsgeek App to the tray so switching keeps working while you play.",
-                    self.toggle("ap-tray", a.tray, false, |this, v, _, cx| this.edit_auto(|a| a.tray = v, cx), cx),
-                ))
+                // Five options are too wide to sit beside the label, so the picker goes under it.
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(u(8.))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(u(2.))
+                                .child(div().font_weight(FontWeight::MEDIUM).child("Everything else"))
+                                .child(div().text_color(t.muted).text_size(u(12.)).child("Profile for apps without a rule.")),
+                        )
+                        .child(div().flex().child(self.profile_picker(
+                            "ap-default",
+                            a.default_profile,
+                            true,
+                            |this, v, cx| this.edit_auto(|a| a.default_profile = v, cx),
+                            cx,
+                        ))),
+                )
+                // The tray switch lives in Settings; say here when closing would stop switching.
+                .when(a.enabled && !self.config.run_in_tray, |el| {
+                    el.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(u(12.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(u(0.))
+                                    .text_color(t.muted)
+                                    .text_size(u(12.5))
+                                    .child("Closing the window stops switching. Turn on Keep running in the tray in Settings to keep it working while you play."),
+                            )
+                            .child(
+                                self.button("ap-tray-settings", "Open Settings", Btn::Normal)
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_page(Page::Settings, cx))),
+                            ),
+                    )
+                })
                 .children(now),
         );
 
@@ -91,7 +124,7 @@ impl AppView {
                     .py(u(6.))
                     .rounded(u(8.))
                     .bg(t.surface_2)
-                    .child(div().flex_1().min_w(u(0.)).overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(NUM_FONT).text_size(u(12.5)).child(r.exe.clone()))
+                    .child(div().flex_1().min_w(u(0.)).overflow_hidden().text_ellipsis().whitespace_nowrap().numeric().text_size(u(12.5)).child(r.exe.clone()))
                     .child(self.profile_picker(
                         ("ap-rule", i),
                         Some(r.profile),
@@ -115,7 +148,7 @@ impl AppView {
             .flex()
             .gap(u(8.))
             .children(self.pickers.as_ref().map(|p| {
-                div().w(u(360.)).child(gpui::component::input::Input::new(&p.rule_exe).small())
+                div().w(u(360.)).child(Styled::h(gpui::component::input::Input::new(&p.rule_exe), u(34.)))
             }))
             .child(
                 self.button("ap-add", "Add rule", Btn::Normal)

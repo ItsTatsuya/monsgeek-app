@@ -157,7 +157,7 @@ impl AppView {
                     .gap(u(10.))
                     .px(u(6.))
                     .py(u(2.))
-                    .child(div().w(u(24.)).text_color(t.muted).font_family(NUM_FONT).text_size(u(12.)).child((i + 1).to_string()))
+                    .child(div().w(u(24.)).text_color(t.muted).numeric().text_size(u(12.)).child((i + 1).to_string()))
                     .child(
                         div()
                             .w(u(14.))
@@ -230,7 +230,7 @@ impl AppView {
                     .flex()
                     .gap(u(8.))
                     .children(self.pickers.as_ref().map(|p| {
-                        div().w(u(320.)).child(gpui::component::input::Input::new(&p.macro_text).small())
+                        div().w(u(320.)).child(Styled::h(gpui::component::input::Input::new(&p.macro_text), u(34.)))
                     }))
                     .child(
                         self.button("macro-add-text", "Add as keystrokes", Btn::Normal)

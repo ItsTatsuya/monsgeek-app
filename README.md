@@ -50,8 +50,8 @@ in-memory keyboard and never opens a HID device.
 - **Tester:** live analog travel at 60 fps with per-key peaks, a Rapid Trigger prediction and
   travel graph, an event log and a tuner; a Raw Input polling-rate test with a gap histogram;
   and calibration (rest position, then a bottom pass).
-- **Automatic profiles:** map an app's exe name to a profile. Closing the window can hide the
-  app to the tray so switching keeps working.
+- **Automatic profiles:** map an app's exe name to a profile. With "Keep running in the tray"
+  on (Settings), closing the window hides the app to the tray so switching keeps working.
 - **Settings:** polling rate (firmware 4.00+), switch type, debounce, RT stability, WASD/arrow
   swap, accidental-press guard, device info, factory reset, and whole-keyboard backup & restore
   to JSON.
@@ -60,7 +60,7 @@ in-memory keyboard and never opens a HID device.
   single profile (keymap, key settings and lighting) as a file.
 - **Undo and redo** for key settings, remaps and lighting (Ctrl+Z, Ctrl+Y, or the header
   buttons).
-- **App:** open at sign-in, start in the tray, light/dark/system appearance and four interface
+- **App:** open at sign-in, keep running in the tray, light/dark/system appearance and four interface
   sizes (Ctrl + / Ctrl − / Ctrl 0).
 - **Keyboard shortcuts:** Ctrl+1…7 for the pages, Alt+1…4 for the profiles, Ctrl+A to select
   all keys, Esc to clear the selection. Buttons, switches, menus and text fields are reachable

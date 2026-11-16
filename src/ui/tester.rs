@@ -107,7 +107,7 @@ impl AppView {
                 .gap(u(6.))
                 .text_size(u(12.5))
                 .child(div().text_color(t.muted).child(label))
-                .child(div().font_family(NUM_FONT).text_color(color).child(v))
+                .child(div().numeric().text_color(color).child(v))
         };
         let badge_on = config.is_some() && predicted.on;
         let readout = div()
@@ -122,8 +122,9 @@ impl AppView {
                     .flex()
                     .items_end()
                     .gap(u(6.))
-                    .child(div().w(u(110.)).font_family(NUM_FONT).text_size(u(34.)).child(format!("{value:.2}")))
-                    .child(div().text_color(t.muted).pb(u(7.)).child("mm")),
+                    // Tabular figures keep the width steady as the value changes.
+                    .child(div().numeric().font_weight(FontWeight::MEDIUM).line_height(relative(1.1)).text_size(u(34.)).child(format!("{value:.2}")))
+                    .child(div().text_color(t.muted).pb(u(4.)).child("mm")),
             )
             .child(
                 div()
@@ -242,9 +243,9 @@ impl AppView {
                     .flex()
                     .gap(u(16.))
                     .text_size(u(12.5))
-                    .child(div().w(u(70.)).font_family(NUM_FONT).text_color(t.muted).child(format!("{:.2} s", e.at)))
+                    .child(div().w(u(70.)).numeric().text_color(t.muted).child(format!("{:.2} s", e.at)))
                     .child(div().w(u(80.)).text_color(if press { t.rt } else { t.warn }).child(if press { "↓ press" } else { "↑ release" }))
-                    .child(div().font_family(NUM_FONT).child(format!("{:.2} mm", e.depth)))
+                    .child(div().numeric().child(format!("{:.2} mm", e.depth)))
             }));
         let graph_card = self.card(
             "Travel graph",
@@ -345,7 +346,7 @@ impl AppView {
                 .top(u(GRAPH_H * mm / MAX_TRAVEL - 16.))
                 .text_color(t.muted)
                 .text_size(u(11.))
-                .font_family(NUM_FONT)
+                .numeric()
                 .child(format!("{mm:.0} mm"))
         });
         div()
@@ -487,8 +488,8 @@ impl AppView {
                                 .flex()
                                 .items_end()
                                 .gap(u(6.))
-                                .child(div().font_family(NUM_FONT).text_size(u(40.)).child(est.hz.map_or("—".into(), fmt)))
-                                .child(div().text_color(t.muted).pb(u(9.)).child("Hz")),
+                                .child(div().numeric().font_weight(FontWeight::MEDIUM).line_height(relative(1.1)).text_size(u(40.)).child(est.hz.map_or("—".into(), fmt)))
+                                .child(div().text_color(t.muted).pb(u(5.)).child("Hz")),
                         )
                         .child(line(
                             "Measured interval:",
@@ -534,7 +535,7 @@ impl AppView {
             .justify_between()
             .text_color(t.muted)
             .text_size(u(11.))
-            .font_family(NUM_FONT)
+            .numeric()
             .children((0..=4).map(|i| div().child(format!("{:.1} ms", i as f64 * BIN_US * BINS as f64 / 4.0 / 1000.0))));
         let right = self.card(
             "Gap between reports",

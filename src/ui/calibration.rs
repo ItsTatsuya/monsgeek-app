@@ -163,7 +163,7 @@ impl AppView {
                                 .flex()
                                 .items_end()
                                 .gap(u(6.))
-                                .child(div().font_family(NUM_FONT).text_size(u(22.)).child(finished.to_string()))
+                                .child(div().numeric().text_size(u(22.)).child(finished.to_string()))
                                 .child(div().text_color(t.muted).pb(u(3.)).child(format!("/ {total} keys"))),
                         )
                         .child(

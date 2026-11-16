@@ -17,11 +17,12 @@ use crate::devices::VisualKey;
 use crate::keycodes::{action_description, action_label, palette, PaletteGroup};
 use crate::protocol::{KeyAction, KeyHe};
 use crate::actions::*;
-use crate::theme::{u, NUM_FONT, UI_FONT};
-use gpui::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use crate::theme::{u, Numeric, UI_FONT};
+use gpui::component::button::{Button, ButtonVariants as _};
 use gpui::component::menu::DropdownMenu as _;
 use gpui::component::notification::Notification;
 use gpui::component::switch::Switch;
+use gpui::component::{TitleBar, TITLE_BAR_HEIGHT};
 use gpui::component::{Disableable as _, Selectable as _, Sizable as _, WindowExt as _};
 use gpui::prelude::*;
 use gpui::*;
@@ -343,6 +344,7 @@ impl Render for AppView {
                 cx.listener(|this, _, _, cx| this.end_drag(cx)),
             )
             .child(body)
+            .child(self.title_bar())
     }
 }
 
@@ -419,13 +421,24 @@ impl AppView {
         label: impl Into<SharedString>,
         kind: Btn,
     ) -> Button {
-        let b = Button::new(id).label(label);
+        let b = Self::roomy(Button::new(id)).label(label);
         match kind {
             Btn::Normal => b,
             Btn::Primary => b.primary(),
             Btn::Ghost => b.ghost(),
             Btn::Danger => b.danger(),
         }
+    }
+
+    /// Standard control height: a little taller than the kit's medium (28 px at the
+    /// default size), so buttons are comfortable to hit and read.
+    fn roomy(b: Button) -> Button {
+        b.h(u(34.)).px(u(14.))
+    }
+
+    /// Compact control height, for buttons repeated in rows and toolbars.
+    fn roomy_sm(b: Button) -> Button {
+        b.h(u(30.)).px(u(12.))
     }
 
     fn card(
@@ -440,8 +453,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap(u(16.))
-            .py(u(18.))
-            .px(u(20.))
+            .p(u(20.))
             .rounded(u(12.))
             .bg(t.surface)
             .border_1()
@@ -456,20 +468,21 @@ impl AppView {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(u(3.))
+                            .gap(u(4.))
                             .flex_1()
                             .min_w(u(0.))
                             .child(
                                 div()
                                     .text_size(u(15.))
-                                    .font_weight(FontWeight(650.))
+                                    .line_height(relative(1.3))
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child(title.into()),
                             )
                             .children(sub.map(|s| {
                                 div()
                                     .text_color(t.muted)
-                                    .text_size(u(12.5))
-                                    .line_height(relative(1.45))
+                                    .text_size(u(13.))
+                                    .line_height(relative(1.5))
                                     .child(s)
                             })),
                     )
@@ -478,7 +491,8 @@ impl AppView {
             .child(body)
     }
 
-    /// A segmented choice (kit `ButtonGroup`): one selected option, shown on the option itself.
+    /// A segmented choice: options sit in a sunken track and the selected one is raised out of
+    /// it. Each option is its own `Button`, so Tab reaches every one and Space picks it.
     /// `id` must be unique on the page: a name, or (name, row) inside lists.
     fn segmented<T: Copy + PartialEq + 'static>(
         &self,
@@ -487,22 +501,47 @@ impl AppView {
         value: Option<T>,
         on: impl Fn(&mut AppView, T, &mut Window, &mut Cx) + 'static,
         cx: &mut Cx,
-    ) -> ButtonGroup {
+    ) -> Div {
+        let t = self.theme;
         let id: ElementId = id.into();
-        let values: Vec<T> = options.iter().map(|(v, _)| *v).collect();
-        ButtonGroup::new(id.clone())
-            .outline()
-            .small()
+        let on = Rc::new(on);
+        // Track radius 8, inset 2: the segments use 6 so the two curves stay concentric.
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(2.))
+            .p(u(2.))
+            .rounded(u(8.))
+            .bg(t.well)
+            .border_1()
+            .border_color(t.border)
             .children(options.into_iter().enumerate().map(|(i, (v, label))| {
+                let selected = value == Some(v);
+                let on = on.clone();
                 Button::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), i.to_string().into()))
+                    .ghost()
+                    .rounded(px(6. * self.ui_scale))
+                    .h(u(30.))
+                    .px(u(14.))
                     .label(label)
-                    .selected(value == Some(v))
+                    .selected(selected)
+                    .toggled(selected)
+                    .when(!selected, |b| b.text_color(t.muted))
+                    .when(selected, |b| b.font_weight(FontWeight::MEDIUM))
+                    .on_click(cx.listener(move |this, _, w, cx| on(this, v, w, cx)))
             }))
-            .on_click(cx.listener(move |this, clicked: &Vec<usize>, w, cx| {
-                if let Some(&v) = clicked.first().and_then(|&i| values.get(i)) {
-                    on(this, v, w, cx);
-                }
-            }))
+    }
+
+    /// An option in a grid of choices (effects, key palette, advanced modes): outlined at rest,
+    /// filled with the primary colour when it's the current choice.
+    fn choice(id: impl Into<ElementId>, selected: bool) -> Button {
+        let b = Self::roomy(Button::new(id));
+        if selected {
+            b.primary().selected(true).toggled(true)
+        } else {
+            b.outline().toggled(false)
+        }
     }
 
     fn toggle(
@@ -514,6 +553,7 @@ impl AppView {
         cx: &mut Cx,
     ) -> Switch {
         Switch::new(id)
+            .color(self.theme.switch_on)
             .checked(on)
             .disabled(disabled)
             .on_click(cx.listener(move |this, checked: &bool, w, cx| change(this, *checked, w, cx)))
@@ -570,7 +610,9 @@ impl AppView {
             let label = if sign < 0.0 { "−" } else { "+" };
             Button::new((if sign < 0.0 { "minus" } else { "plus" }, id as usize))
                 .ghost()
-                .xsmall()
+                .small()
+                .w(u(28.))
+                .h(u(28.))
                 .label(label)
                 .accessibility_label(name)
                 .disabled(disabled || value.is_none())
@@ -591,7 +633,7 @@ impl AppView {
                     .flex()
                     .items_center()
                     .gap(u(6.))
-                    .child(div().flex_1().font_weight(FontWeight(550.)).child(label))
+                    .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(label))
                     .child(step_btn(-1.0, "Decrease"))
                     .child(
                         // Click to type a value; Enter or clicking elsewhere applies it, Esc cancels.
@@ -603,13 +645,16 @@ impl AppView {
                             .items_center()
                             .justify_end()
                             .px(u(8.))
-                            .rounded(u(7.))
+                            .rounded(u(6.))
                             .bg(t.surface_2)
                             .border_1()
-                            .border_color(if editing.is_some() { t.accent } else { t.border })
-                            .font_family(NUM_FONT)
+                            .border_color(if editing.is_some() { t.focus } else { t.border_strong })
+                            .numeric()
                             .font_weight(FontWeight::MEDIUM)
                             .text_size(u(13.))
+                            .when(!disabled && editing.is_none(), |el| {
+                                el.hover(|s| s.border_color(t.muted))
+                            })
                             .when(!disabled, |el| {
                                 let start = value.map(|v| format!("{v:.decimals$}")).unwrap_or_default();
                                 el.cursor_text().on_mouse_down(
@@ -630,16 +675,41 @@ impl AppView {
                                     .when(!unit.is_empty(), |el| {
                                         el.child(div().ml(u(4.)).text_color(t.muted).child(unit))
                                     }),
-                                None => el.child(format!("{text} {unit}")),
+                                None => el
+                                    .when(value.is_none(), |el| el.text_color(t.muted))
+                                    .child(text)
+                                    .when(!unit.is_empty() && value.is_some(), |el| {
+                                        el.child(div().ml(u(4.)).text_color(t.muted).child(unit))
+                                    }),
                             }),
                     )
                     .child(step_btn(1.0, "Increase")),
             )
-            .child(
+            .child({
+                // The thumb grows a soft ring while the pointer is over the track, and a wider
+                // one while it's being dragged. Shadows are in physical pixels, so scale them.
+                let s = self.ui_scale;
+                let dragging = self.drag.is_some_and(|g| g.id == id);
+                let ring = |spread: f32, color: Hsla| BoxShadow {
+                    color,
+                    offset: point(px(0.), px(0.)),
+                    blur_radius: px(0.),
+                    spread_radius: px(spread * s),
+                    inset: false,
+                };
+                let lift = BoxShadow {
+                    color: t.thumb_shadow,
+                    offset: point(px(0.), px(1. * s)),
+                    blur_radius: px(3. * s),
+                    spread_radius: px(0.),
+                    inset: false,
+                };
+                let group: SharedString = format!("slider-{}", id as usize).into();
                 div()
                     .id(("track", id as usize))
+                    .group(group.clone())
                     .relative()
-                    .h(u(18.))
+                    .h(u(20.))
                     .flex()
                     .items_center()
                     .child(
@@ -655,22 +725,39 @@ impl AppView {
                     .child(
                         div()
                             .w_full()
-                            .h(u(6.))
+                            .h(u(4.))
                             .rounded_full()
                             .bg(t.track)
-                            .child(div().h_full().w(relative(frac)).rounded_full().bg(fill)),
+                            .when(value.is_some(), |el| {
+                                el.child(div().h_full().w(relative(frac)).rounded_full().bg(fill))
+                            }),
                     )
-                    .child(
-                        div()
-                            .absolute()
-                            .left(relative(frac))
-                            .ml(u(-9.))
-                            .size(u(18.))
-                            .rounded_full()
-                            .bg(t.slider_thumb)
-                            .border_2()
-                            .border_color(fill),
-                    )
+                    // No thumb while there's no single value (nothing or a mixed selection):
+                    // a thumb at the left end would claim the value is the minimum.
+                    .when(value.is_some(), |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .left(relative(frac))
+                                .ml(u(-8.))
+                                .size(u(16.))
+                                .rounded_full()
+                                .bg(t.slider_thumb)
+                                .border_1()
+                                .border_color(fill)
+                                .map(|el| {
+                                    if dragging {
+                                        el.shadow(vec![lift.clone(), ring(6., t.halo)])
+                                    } else {
+                                        el.shadow(vec![lift.clone()]).when(!disabled, |el| {
+                                            el.group_hover(group.clone(), |st| {
+                                                st.shadow(vec![lift.clone(), ring(4., t.halo)])
+                                            })
+                                        })
+                                    }
+                                }),
+                        )
+                    })
                     .when(!disabled, |el| {
                         el.cursor_pointer().on_mouse_down(
                             MouseButton::Left,
@@ -678,8 +765,8 @@ impl AppView {
                                 this.begin_drag(d, e.position, cx)
                             }),
                         )
-                    }),
-            )
+                    })
+            })
     }
 
     /// A one-line text box. Typing goes to the field while it is active.
@@ -733,7 +820,34 @@ impl AppView {
             })
     }
 
-    /// The app logo: a dark rounded tile with a bold M (same design as the exe icon).
+    /// The window's title bar: drawn over the top of the window with no fill or separator, so
+    /// the sidebar and page colours run up to the top edge. GPUI Kit's `TitleBar` provides
+    /// dragging and the Windows minimise / maximise / close buttons.
+    fn title_bar(&self) -> Div {
+        let t = self.theme;
+        div().absolute().top_0().left_0().w_full().flex().flex_col().child(
+            TitleBar::new()
+                .bg(transparent_black())
+                .border_color(transparent_black())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(u(8.))
+                        .child(self.logo(16.))
+                        .child(
+                            div()
+                                .text_size(u(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(t.muted)
+                                .child(crate::APP_NAME),
+                        ),
+                ),
+        )
+    }
+
+    /// The app logo: an isometric keyboard on a dark rounded tile (same design as the exe
+    /// icon; both come from `assets/icon/make_logo.py`).
     fn logo(&self, size: f32) -> Div {
         let t = self.theme;
         div()
@@ -750,7 +864,7 @@ impl AppView {
             .flex()
             .items_center()
             .justify_center()
-            .child(svg().path("icons/logo.svg").size(u(size * 0.86)).text_color(t.logo_mark))
+            .child(svg().path("icons/logo.svg").size(u(size)).text_color(t.logo_mark))
     }
 
     fn banner(&self, text: impl Into<SharedString>, color: Hsla) -> Div {
@@ -771,7 +885,7 @@ impl AppView {
         kind: Btn,
         enabled: bool,
     ) -> Button {
-        self.button(id, label, kind).small().disabled(!enabled)
+        Self::roomy_sm(self.button(id, label, kind)).disabled(!enabled)
     }
 
     /// Key palette groups as clickable chips; `current` is highlighted.
@@ -816,13 +930,11 @@ impl AppView {
                             g.keys.into_iter().enumerate().map(|(ki, (label, action))| {
                                 let on = Some(action) == current || highlight.contains(&action);
                                 let on_pick = on_pick.clone();
-                                Button::new((id, gi * 100 + ki))
-                                    .outline()
-                                    .small()
-                                    .min_w(u(40.))
+                                Self::choice((id, gi * 100 + ki), on)
+                                    .h(u(32.))
+                                    .px(u(10.))
+                                    .min_w(u(44.))
                                     .label(label)
-                                    .selected(on)
-                                    .when(on, |b| b.border_color(t.text_2))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         on_pick(this, action, cx)
                                     }))
@@ -1009,7 +1121,7 @@ impl AppView {
                                 .w_full()
                                 .flex()
                                 .justify_end()
-                                .font_family(NUM_FONT)
+                                .numeric()
                                 .font_weight(FontWeight::MEDIUM)
                                 .line_height(relative(1.0))
                                 .text_size(px(if compact { 9. } else { 11. }))
@@ -1124,20 +1236,12 @@ impl AppView {
             .flex_col()
             .gap(u(4.))
             .px(u(12.))
-            .py(u(16.))
+            // Clear of the title bar drawn over the top of the window.
+            .pt(TITLE_BAR_HEIGHT + px(8. * self.ui_scale))
+            .pb(u(16.))
             .bg(t.sidebar)
             .border_r_1()
             .border_color(t.border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(u(10.))
-                    .px(u(6.))
-                    .pb(u(14.))
-                    .child(self.logo(26.))
-                    .child(div().text_size(u(15.)).font_weight(FontWeight::BOLD).child(crate::APP_NAME)),
-            )
             .child(
                 div()
                     .flex()
@@ -1186,6 +1290,8 @@ impl AppView {
                 Button::new(p.label())
                     .ghost()
                     .w_full()
+                    .h(u(36.))
+                    .px(u(10.))
                     .icon(
                         gpui::component::Icon::empty().path(match p {
                             Page::Performance => "icons/gauge.svg",
@@ -1226,9 +1332,8 @@ impl AppView {
             .items_center()
             .gap(u(4.))
             .child(
-                Button::new("undo")
+                Self::roomy_sm(Button::new("undo"))
                     .ghost()
-                    .small()
                     .label("Undo")
                     .disabled(undo.is_none() || self.transitioning)
                     .tooltip_with_action(
@@ -1239,9 +1344,8 @@ impl AppView {
                     .on_click(cx.listener(|this, _, _, cx| this.undo(cx))),
             )
             .child(
-                Button::new("redo")
+                Self::roomy_sm(Button::new("redo"))
                     .ghost()
-                    .small()
                     .label("Redo")
                     .disabled(redo.is_none() || self.transitioning)
                     .tooltip_with_action(
@@ -1267,7 +1371,13 @@ impl AppView {
                     .flex_1()
                     .min_w(u(0.))
                     .gap(u(2.))
-                    .child(div().text_size(u(20.)).font_weight(FontWeight::SEMIBOLD).child(title))
+                    .child(
+                        div()
+                            .text_size(u(22.))
+                            .line_height(relative(1.25))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
                     .child(div().text_size(u(13.)).text_color(t.muted).child(sub)),
             )
             .child(
@@ -1310,6 +1420,8 @@ impl AppView {
                 .h_full()
                 .flex()
                 .flex_col()
+                // Clear of the title bar and its window buttons.
+                .pt(TITLE_BAR_HEIGHT)
                 .child(header)
                 .child(
                     div()
@@ -1407,8 +1519,8 @@ impl AppView {
 
         let presets =
             div()
-                .flex()
-                .flex_wrap()
+                .grid()
+                .grid_cols(2)
                 .gap(u(8.))
                 .children(
                     PRESETS
@@ -1418,7 +1530,8 @@ impl AppView {
                             Button::new(("preset", i))
                                 .outline()
                                 .h_auto()
-                                .min_w(u(140.))
+                                .w_full()
+                                .px(u(12.))
                                 .py(u(8.))
                                 .disabled(none)
                                 .accessibility_label(format!("{name} preset: {desc}"))
@@ -1445,6 +1558,8 @@ impl AppView {
                                         .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
                                         .child(div().text_color(t.muted).text_size(u(12.)).child(desc)),
                                 )
+                                // Button content is centred; the spacer keeps the text on the leading edge.
+                                .child(div().flex_1())
                         }),
                 );
 
@@ -1470,8 +1585,7 @@ impl AppView {
                 none,
                 |this, v, _, cx| this.update_keys(move |k| k.rapid_trigger = v, cx),
                 cx,
-            )
-            .color(t.rt);
+            );
         let rt_body = div()
             .flex()
             .flex_col()
@@ -1822,7 +1936,7 @@ impl AppView {
                             .child(
                                 div()
                                     .w(u(110.))
-                                    .font_family(NUM_FONT)
+                                    .numeric()
                                     .text_size(u(12.))
                                     .child(format!("Fn + {}", action_label(&base_names[i]))),
                             )
@@ -1963,21 +2077,22 @@ impl AppView {
             cx,
         );
 
+        // As many equal columns as fit the card (design px: card padding 2 × 20, the settings
+        // column 340 + gap 16 beside it when wide), so the grid fills its card edge to edge.
+        let card_w = self.kb_width.get() / self.ui_scale - if self.narrow() { 0.0 } else { 356.0 } - 40.0;
+        let cols = ((card_w + 6.0) / 156.0).floor().clamp(2.0, 5.0) as u16;
         let effects =
             div()
-                .flex()
-                .flex_wrap()
+                .grid()
+                .grid_cols(cols)
                 .gap(u(6.))
                 .children(EFFECTS.iter().map(|e| {
                     let active = e.id == l.effect;
                     let id = e.id;
-                    Button::new(("fx", e.id as usize))
-                        .outline()
-                        .w(u(138.))
+                    Self::choice(("fx", e.id as usize), active)
+                        .w_full()
                         .label(e.name)
                         .child(div().flex_1())
-                        .selected(active)
-                        .when(active, |b| b.border_color(t.text_2))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.edit_lighting(|l| l.effect = id, cx)
                         }))
@@ -2126,7 +2241,7 @@ impl AppView {
                 .justify_between()
                 .py(u(5.))
                 .child(div().text_color(t.muted).child(label))
-                .child(div().font_family(NUM_FONT).text_size(u(12.5)).child(v))
+                .child(div().numeric().text_size(u(12.5)).child(v))
         };
         let rate = d.report_rate;
         let polling = div()
@@ -2374,7 +2489,7 @@ impl AppView {
         Some(
             div()
                 .w(u(width))
-                .child(gpui::component::input::Input::new(&p.search).small().cleanable(true))
+                .child(Styled::h(gpui::component::input::Input::new(&p.search), u(34.)).cleanable(true))
                 .into_any_element(),
         )
     }
@@ -2384,7 +2499,7 @@ impl AppView {
         use crate::config::{Appearance, UI_SIZES};
         let t = self.theme;
         let at_login = self.tools.launch_at_login;
-        let in_tray = self.config.start_in_tray;
+        let in_tray = self.config.run_in_tray;
         let size = self.config.font_size();
         self.card(
             "App",
@@ -2406,14 +2521,14 @@ impl AppView {
                     ),
                 ))
                 .child(self.setting_row(
-                    "Start in the tray",
-                    "Open hidden, with an icon in the notification area. Closing the window also hides it there.",
+                    "Keep running in the tray",
+                    "Closing the window hides Monsgeek App to the notification area, so automatic profiles and per-layer lighting keep working. Opening at sign-in starts it there.",
                     self.toggle(
                         "in-tray",
                         in_tray,
                         false,
                         |this, v, _, cx| {
-                            this.config.start_in_tray = v;
+                            this.config.run_in_tray = v;
                             this.save_config(cx);
                             this.sync_auto(cx);
                             cx.notify();
@@ -2471,8 +2586,7 @@ impl AppView {
         let busy = self.transitioning;
         let rows = (0..crate::app::PROFILES).map(|p| {
             let name_input = self.pickers.as_ref().map(|k| {
-                gpui::component::input::Input::new(&k.profile_names[p as usize])
-                    .small()
+                Styled::h(gpui::component::input::Input::new(&k.profile_names[p as usize]), u(30.))
                     .aria_label(format!("Name of profile {}", p + 1))
             });
             let names: Vec<(u8, String)> = (0..crate::app::PROFILES)
@@ -2489,14 +2603,13 @@ impl AppView {
                     div()
                         .w(u(20.))
                         .flex_none()
-                        .font_family(NUM_FONT)
+                        .numeric()
                         .text_color(if p == active { t.text } else { t.muted })
                         .child(format!("{}", p + 1)),
                 )
                 .child(div().flex_1().min_w(u(0.)).children(name_input))
                 .child(
-                    Button::new(("copy-profile", p as usize))
-                        .small()
+                    Self::roomy_sm(Button::new(("copy-profile", p as usize)))
                         .label("Copy to…")
                         .dropdown_caret(true)
                         .disabled(busy)
@@ -2527,15 +2640,13 @@ impl AppView {
                         }),
                 )
                 .child(
-                    Button::new(("export-profile", p as usize))
-                        .small()
+                    Self::roomy_sm(Button::new(("export-profile", p as usize)))
                         .label("Export…")
                         .disabled(busy)
                         .on_click(cx.listener(move |this, _, _, cx| this.export_profile(p, cx))),
                 )
                 .child(
-                    Button::new(("import-profile", p as usize))
-                        .small()
+                    Self::roomy_sm(Button::new(("import-profile", p as usize)))
                         .label("Import…")
                         .disabled(busy)
                         .on_click(cx.listener(move |this, _, _, cx| this.pick_profile_file(p, cx))),

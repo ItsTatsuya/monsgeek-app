@@ -47,7 +47,7 @@ impl AppView {
             .bg(t.surface_2)
             .border_1()
             .border_color(t.border_strong)
-            .font_family(NUM_FONT)
+            .numeric()
             .text_size(u(12.))
             .child(text.into())
     }
@@ -370,12 +370,12 @@ impl AppView {
                         .items_center()
                         .gap(u(8.))
                         .child(
-                            Button::new(("dks-slot", r))
+                            Self::roomy(Button::new(("dks-slot", r)))
                                 .outline()
                                 .w(u(120.))
                                 .flex_none()
                                 .selected(selected)
-                                .when(selected, |b| b.border_color(t.text_2))
+                                .when(selected, |b| b.border_color(t.text))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if let Some(AdvEditor::Dks { row, .. }) = this.features.adv.as_mut() {
                                         *row = r;
@@ -442,7 +442,7 @@ impl AppView {
                         .h_auto()
                         .p(u(12.))
                         .selected(selected)
-                        .when(selected, |b| b.border_color(t.text_2))
+                        .when(selected, |b| b.border_color(t.text))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(AdvEditor::ModTap { hold, .. }) = this.features.adv.as_mut() {
                                 *hold = which_hold;

@@ -39,7 +39,7 @@ impl AppView {
         self.setting_row(
             "Switch type",
             "Tells the firmware which magnetic switch is installed so travel is measured correctly.",
-            Button::new("switch-type")
+            Self::roomy(Button::new("switch-type"))
                 .label(label)
                 .dropdown_caret(true)
                 .min_w(u(200.))
