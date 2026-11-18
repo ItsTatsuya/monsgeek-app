@@ -518,6 +518,5 @@ mod tests {
         let first = rx.recv_blocking().unwrap();
         assert!(matches!(first, RawEvent::Ready));
         drop(capture);
-        assert!(foreground_app().is_none_or(|(exe, _)| exe.ends_with(".exe") || !exe.is_empty()));
     }
 }

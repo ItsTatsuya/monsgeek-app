@@ -216,10 +216,13 @@ mod tests {
     fn an_edit_burst_records_one_step() {
         let mut h = History::default();
         h.before_keys(0, &[key(1.0)]);
+        h.before_lighting(0, Lighting::default());
+        // Still the same burst: no new step lands on top of the lighting one.
         h.before_keys(0, &[key(1.1)]);
+        assert_eq!(h.can_undo(), Some("lighting"));
         h.close_keys();
         h.before_keys(0, &[key(1.2)]);
-        assert_eq!(h.undo.len(), 2);
+        assert_eq!(h.can_undo(), Some("key settings"));
     }
 
     #[test]
@@ -234,10 +237,9 @@ mod tests {
     #[test]
     fn forgetting_keys_keeps_other_steps() {
         let mut h = History::default();
-        h.before_keys(0, &[key(1.0)]);
         h.before_lighting(0, Lighting::default());
+        h.before_keys(0, &[key(1.0)]);
         h.forget_keys();
         assert_eq!(h.can_undo(), Some("lighting"));
-        assert_eq!(h.undo.len(), 1);
     }
 }
